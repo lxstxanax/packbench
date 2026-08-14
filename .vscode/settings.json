@@ -1,0 +1,25 @@
+{
+    // The CMake project lives in the CubeMX-generated subfolder, not at the
+    // workspace root -- the root also holds fw/, tools/ and notes/.
+    "cmake.sourceDirectory": "${workspaceFolder}/max17320_gui",
+    "cmake.useCMakePresets": "always",
+    "cmake.preferredGenerators": [
+        "Ninja"
+    ],
+
+    // fw/ is compiled into the firmware from outside the CubeMX tree, so
+    // point the C tooling at the generated compile_commands.json.
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/max17320_gui/build/Debug/compile_commands.json",
+
+    // The task buttons live in the status bar, so keep it on.
+    "workbench.statusBar.visible": true,
+
+    "files.associations": {
+        "*.ioc": "ini"
+    },
+    "files.exclude": {
+        "**/build": true,
+        "**/__pycache__": true,
+        "**/.venv": true
+    }
+}

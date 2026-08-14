@@ -1,0 +1,22 @@
+# Build output
+build/
+*.elf
+*.map
+*.o
+*.d
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Dashboard recordings — new ones land here; curated captures live in data/
+tools/bms_dashboard/*.csv
+
+# The F7 provisioning driver is its own repository, cloned here only for
+# reference: github.com/lxstxanax/stm32f767zi-max17320-bms
+ref-f767-max17320/
+
+# CubeMX leftovers
+*.bak
+.mxproject.bak
