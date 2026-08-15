@@ -124,6 +124,26 @@
 // then this to 300U. Six intervals of margin and a fail-safe twice as quick.
 #define UART_CONTROL_TIMEOUT_MS          500U
 
+// The bench-drive console keys ('t'/'v') get their own, longer deadline.
+//
+// They are fed by terminal key auto-repeat, and auto-repeat does NOT start at
+// the repeat rate -- it starts after the repeat DELAY, which is 660 ms by X11
+// default and 500 ms on GNOME. With one shared 500 ms deadline the first
+// repeat arrives at or after the deadline, so a *held* key produces
+// arm -> fail-safe -> re-arm on every hold: the ramp is reset to zero and the
+// pack sees a repeated breakaway load instead of one smooth pull. 900 ms
+// clears the worst common repeat delay with margin.
+//
+// This does not weaken the RPi path: that still uses UART_CONTROL_TIMEOUT_MS.
+#define BENCH_DRIVE_TIMEOUT_MS           900U
+
+// How long a bench-drive arm stays valid. The first 't'/'v' keypress only
+// arms; driving needs a second press inside this window. One stray byte on
+// the console therefore cannot command throttle at all -- which matters
+// because, unlike the RPi path, a console key has no start byte, no length
+// and no checksum protecting it.
+#define BENCH_ARM_WINDOW_MS             3000U
+
 // Recovery from a packet that started but was not completed. At 115200 baud
 // a 5-byte packet takes about 0.43 ms, so 10 ms is over twenty frame times:
 // generous enough never to chop a frame that is merely in flight, short
@@ -221,12 +241,39 @@ static volatile uint32_t last_control_packet_tick = 0U;
 static volatile uint32_t last_rx_byte_tick = 0U;
 static volatile uint8_t drive_watchdog_armed = 0U;
 
+// Which deadline the CONTROL watchdog is currently enforcing. Set by whichever
+// source last commanded the drive, so the RPi keeps its tight 500 ms while the
+// console bench keys get the longer window auto-repeat needs.
+static volatile uint32_t drive_timeout_ms = UART_CONTROL_TIMEOUT_MS;
+
+// RPi link statistics, printed by the 'l' console key.
+//
+// Without these the only way to tell a live link from a dead one is to watch
+// whether the car moves, which means finding out about a broken link with the
+// wheels already turning. These separate the failure modes: no bytes at all
+// (cable, ground, RPi not booted) reads differently from bytes arriving but
+// failing CRC (baud rate, noise, wrong wiring), which reads differently again
+// from good frames being rejected on value range (protocol mismatch).
+//
+// They are plain counters, never cleared, so a rate is the difference between
+// two readings. Incrementing a uint32_t is a few cycles and the ones touched
+// from the ISR are written only there, so no guarding is needed.
+static volatile uint32_t link_bytes       = 0U;  // bytes seen by the RX ISR
+static volatile uint32_t link_frames      = 0U;  // complete 5-byte frames assembled
+static volatile uint32_t link_frames_used = 0U;  // frames the main loop actually read
+static volatile uint32_t link_crc_err     = 0U;  // frames rejected by CRC
+static volatile uint32_t link_range_err   = 0U;  // CONTROL rejected on value range
+static volatile uint32_t link_control_ok  = 0U;  // CONTROL accepted and acted on
+static volatile uint32_t link_estop       = 0U;  // ESTOP frames latched in the ISR
+static volatile uint32_t link_uart_err    = 0U;  // HAL error callbacks (noise/overrun)
+
 // After the pack protector cuts the discharge path, the bridge must stay
 // off until the pack has read healthy continuously for this long. Without
-// it the RPi's command stream -- which is continuous, hundreds of packets a
-// second, not the 20..50 Hz this comment used to claim -- would re-arm on the
-// very next packet, and the protector would be hammered several times a
-// second, which is precisely the cycle that destroyed the previous board.
+// it the RPi's command stream -- controller.py resends at least every 200 ms
+// (_RESEND_INTERVAL = 0.2, so ~5 Hz at rest and faster while the joystick is
+// moving) -- would re-arm on the very next packet, and the protector would be
+// hammered repeatedly, which is precisely the cycle that destroyed the
+// previous board. Use the 'l' console key to see the measured rate.
 #define PACK_RECOVER_HOLD_MS  1000U
 
 static volatile uint32_t pack_rearm_after_tick = 0U;
@@ -287,6 +334,11 @@ static void UART_ProcessPacket(uint8_t *packet);
 static bool Console_AuxKey(char c);
 static bool Console_MayBlock(void);
 static void IWDG_Start(void);
+
+// Declared up here because Console_AuxKey() drives the bench-test keys through
+// the very same arming path a CONTROL packet uses, and it is defined above the
+// drive helpers.
+static void Drive_Arm(void);
 static void IWDG_Refresh(void);
 
 // True while the telemetry half of the pack interlock is in force. Compiled
@@ -383,6 +435,168 @@ static bool Console_AuxKey(char c)
 
     switch (c)
     {
+        case 'l':
+        case 'L':
+        {
+            // Snapshot the counters once. They are written from the RX ISR,
+            // so reading each one twice could print a self-inconsistent set
+            // (e.g. more frames used than assembled).
+            uint32_t now         = HAL_GetTick();
+            uint32_t bytes       = link_bytes;
+            uint32_t frames      = link_frames;
+            uint32_t used        = link_frames_used;
+            uint32_t ctrl_ok     = link_control_ok;
+            uint32_t crc_bad     = link_crc_err;
+            uint32_t range_bad   = link_range_err;
+            uint32_t estops      = link_estop;
+            uint32_t uart_errs   = link_uart_err;
+            uint32_t byte_age    = now - last_rx_byte_tick;
+            uint32_t ctrl_age    = now - last_control_packet_tick;
+
+            // Frames the ISR assembled while the main loop was busy, so the
+            // mailbox was overwritten before it was read. A few is normal;
+            // a large and growing number means the loop is being held up.
+            uint32_t overwritten = frames - used;
+
+            // bms_printf() truncates past 256 bytes, so this is deliberately
+            // split rather than written as one big format string.
+            bms_printf("\r\nRPi link  --  USART1 PB6/PB7 @ 115200 8N1\r\n"
+                       "  bytes      %10lu    last byte    %lu ms ago\r\n",
+                       (unsigned long)bytes, (unsigned long)byte_age);
+            bms_printf("  frames     %10lu    overwritten  %lu\r\n"
+                       "  CONTROL ok %10lu    last CONTROL %lu ms ago\r\n",
+                       (unsigned long)frames, (unsigned long)overwritten,
+                       (unsigned long)ctrl_ok, (unsigned long)ctrl_age);
+            bms_printf("  CRC bad    %10lu    range bad    %lu\r\n"
+                       "  ESTOP rx   %10lu    UART errors  %lu\r\n",
+                       (unsigned long)crc_bad, (unsigned long)range_bad,
+                       (unsigned long)estops, (unsigned long)uart_errs);
+            bms_printf("  drive watchdog %s  (timeout %u ms)\r\n",
+                       drive_watchdog_armed ? "ARMED" : "not armed",
+                       (unsigned)UART_CONTROL_TIMEOUT_MS);
+
+            // A verdict, so the numbers do not have to be interpreted under
+            // time pressure. Ordered most-fundamental failure first.
+            if (bytes == 0U)
+            {
+                bms_print("  -> NOTHING RECEIVED. Check: RPi booted and its sender\r\n"
+                          "     running, PB7 <- RPi TX, PB6 -> RPi RX, common GND.\r\n");
+            }
+            else if ((ctrl_ok == 0U) && (crc_bad > 0U))
+            {
+                bms_print("  -> bytes arrive but every frame fails CRC: wrong baud,\r\n"
+                          "     TX/RX swapped, or noise on the line.\r\n");
+            }
+            else if ((ctrl_ok == 0U) && (range_bad > 0U))
+            {
+                bms_print("  -> frames are valid but values are out of range:\r\n"
+                          "     protocol mismatch with the RPi side.\r\n");
+            }
+            else if (ctrl_ok == 0U)
+            {
+                bms_print("  -> bytes arrive but no complete CONTROL frame yet.\r\n");
+            }
+            else if (byte_age > 2000U)
+            {
+                bms_print("  -> link WAS alive and has gone quiet. RPi stopped\r\n"
+                          "     sending, lost power, or the cable came off.\r\n");
+            }
+            else if (ctrl_age > UART_CONTROL_TIMEOUT_MS)
+            {
+                bms_print("  -> stale: last good CONTROL is older than the drive\r\n"
+                          "     watchdog. The car will not move.\r\n");
+            }
+            else
+            {
+                bms_print("  -> link is LIVE\r\n");
+            }
+            return true;
+        }
+
+        case 'h':
+        case 'H':
+            // Appended under the monitor's own help screen. Kept to a few
+            // lines so it does not push the pack readout off a short terminal.
+            bms_print("\r\n vehicle keys\r\n"
+                      "   t / v   bench drive forward / reverse (hold, no RPi needed)\r\n"
+                      "   > <     steer right / left by 10 us      . ,  by 50 us\r\n"
+                      "   =       centre steering                  s    show pulse\r\n");
+            bms_print("   + -     speed limit up / down 5%         m    show limit\r\n"
+                      "   l       RPi link statistics              e    clear e-stop\r\n"
+                      "   i       waive pack telemetry interlock (asks to confirm)\r\n");
+            return true;
+
+        case 't':
+        case 'T':
+        case 'v':
+        case 'V':
+        {
+            // Bench drive with no RPi attached.
+            //
+            // This deliberately reuses the exact path a CONTROL packet takes --
+            // Drive_Arm(), the ramp inside MotorDC_SetSpeed(), the same speed
+            // limiter and the same drive watchdog -- so what gets tested here
+            // is what will actually run in the car, not a bypass around it.
+            //
+            // Safe by construction: one keypress refreshes the drive watchdog
+            // exactly like one packet would. The motor keeps turning only
+            // while keys keep arriving; stop pressing and the watchdog opens
+            // the bridge after UART_CONTROL_TIMEOUT_MS. There is no state to
+            // get stuck in and no way to walk away from a spinning wheel.
+            static uint32_t bench_msg_tick = 0U;
+            static uint32_t bench_arm_tick = 0U;
+            static bool     bench_armed    = false;
+            bool forward = ((c == 't') || (c == 'T'));
+            uint32_t tick = HAL_GetTick();
+
+            if (estop_latched)
+            {
+                bench_armed = false;
+                bms_print("\r\nemergency stop latched -- clear it with 'e' first\r\n");
+                return true;
+            }
+
+            // First press only arms; it does not move anything. A console key
+            // has no start byte, no length and no checksum behind it, so a
+            // single stray byte must not be able to command throttle. The arm
+            // expires on its own so it cannot sit waiting indefinitely.
+            if (!bench_armed || ((tick - bench_arm_tick) > BENCH_ARM_WINDOW_MS))
+            {
+                bench_armed   = true;
+                bench_arm_tick = tick;
+                bms_printf("\r\nbench drive ARMED (%s) -- press the same key again "
+                           "within %u ms to actually drive\r\n",
+                           forward ? "forward" : "reverse",
+                           (unsigned)BENCH_ARM_WINDOW_MS);
+                return true;
+            }
+
+            bench_arm_tick = tick;
+
+            last_control_packet_tick = tick;
+            drive_watchdog_armed = 1U;
+            drive_timeout_ms = BENCH_DRIVE_TIMEOUT_MS;
+
+            // Drive_Arm() enforces the pack interlock, so a blocked pack still
+            // refuses to drive from here just as it would from a packet.
+            Drive_Arm();
+            MotorDC_SetSpeed(
+                MotorPercent_ToPwm((int8_t)(MOTOR_FORWARD_SIGN * (forward ? 100 : -100))));
+
+            // Held keys arrive several times a second; printing every one
+            // would bury the dashboard.
+            if ((tick - bench_msg_tick) > 700U)
+            {
+                bench_msg_tick = tick;
+                bms_printf("\r\nbench drive %s at %u%% -- keep the key repeating, "
+                           "stops %u ms after the last press\r\n",
+                           forward ? "FORWARD" : "REVERSE",
+                           (unsigned)motor_limit_pct,
+                           (unsigned)BENCH_DRIVE_TIMEOUT_MS);
+            }
+            return true;
+        }
+
         case 'e':
         case 'E':
             if (!estop_latched)
@@ -757,8 +971,11 @@ int main(void)
     // speed forever.
     uint32_t now = HAL_GetTick();
 
+    // drive_timeout_ms is UART_CONTROL_TIMEOUT_MS for the RPi and the longer
+    // BENCH_DRIVE_TIMEOUT_MS while the console bench keys are driving; see
+    // where each one sets it.
     if (drive_watchdog_armed &&
-        ((now - last_control_packet_tick) > UART_CONTROL_TIMEOUT_MS))
+        ((now - last_control_packet_tick) > drive_timeout_ms))
     {
         Drive_FailSafe();   // zero PWM, then R_EN/L_EN low
         Steering_Disable(); // immediate center + PWM hold
@@ -803,7 +1020,8 @@ int main(void)
     // comment here used to call it -- the wheels turn, so the car must be on
     // blocks. Steering scale: 0 = left, 50 = center, 100 = right; the real
     // pulse range is limited in steering.c to the calibrated safe values
-    // 2130 us / 1550 us / 1080 us, not the full 500..2500 us passport range.
+    // 2400 us / 1550 us / 750 us (measured 2026-08-16), not the full
+    // 500..2500 us passport range.
     //
     // Only for bench testing: this keeps overwriting the steering target and
     // blocks the loop with HAL_Delay(), so real UART control must stay off
@@ -1111,6 +1329,8 @@ static void UART_SendPacket(uint8_t cmd, int8_t motor, uint8_t steer_position)
 
 static void UART_ProcessPacket(uint8_t *packet)
 {
+    link_frames_used++;
+
     if (packet[0] != UART_PACKET_START)
     {
         return;
@@ -1131,6 +1351,7 @@ static void UART_ProcessPacket(uint8_t *packet)
 
     if (crc_rx != crc_calc)
     {
+        link_crc_err++;
         return;
     }
 
@@ -1152,6 +1373,7 @@ static void UART_ProcessPacket(uint8_t *packet)
                 (motor_percent < -100))
             {
                 // Wrong protocol value. Stop safely and center steering.
+                link_range_err++;
                 Drive_FailSafe();
                 Steering_Disable();
                 return;
@@ -1166,6 +1388,8 @@ static void UART_ProcessPacket(uint8_t *packet)
             // Repeated identical CONTROL packets are normal and harmless.
             last_control_packet_tick = HAL_GetTick();
             drive_watchdog_armed = 1U;
+            drive_timeout_ms = UART_CONTROL_TIMEOUT_MS;
+            link_control_ok++;
 
             Drive_Arm();
             Steering_Enable();
@@ -1215,6 +1439,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     if (huart->Instance == USART1)
     {
         last_rx_byte_tick = HAL_GetTick();
+        link_bytes++;
 
         if (uart_packet_index == 0U)
         {
@@ -1255,6 +1480,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
                                                     uart_packet[3])))
                 {
                     estop_latched = 1U;
+                    link_estop++;
 
                     // Kill the bridge now, at register level, instead of
                     // waiting for the main loop: a monitor console command
@@ -1263,6 +1489,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
                     // loop still runs the full, ordered fail-safe afterwards.
                     Drive_EmergencyOff();
                 }
+
+                link_frames++;
 
                 // Latest complete packet wins.
                 // This is better for high-rate repeated control commands.
@@ -1284,6 +1512,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         // Noise / overrun / framing error can stop HAL RX.
         // Reset packet assembly and restart byte reception.
         uart_packet_index = 0U;
+        link_uart_err++;
 
         HAL_UART_AbortReceive(huart);
         HAL_UART_Receive_IT(&huart1, &rx_byte, 1);

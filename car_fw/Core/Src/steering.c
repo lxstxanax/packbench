@@ -26,9 +26,15 @@
 //   or asymmetric values on both sides.
 // -----------------------------------------------------------------------------
 
-#define STEERING_LEFT_US          2200U
+// MEASURED on the car, 2026-08-16, servo fitted and linkage relieved with a
+// Dremel so nothing binds. Swept from centre in 50 us steps while watching the
+// wheels: they stop gaining angle at 2400 us to the left, and 600 us to the
+// right was past what the geometry wants, so the right limit is pulled back
+// three steps to 750 us. Travel is 850 us left and 800 us right -- slightly
+// asymmetric, which the two-sided interpolation below handles exactly.
+#define STEERING_LEFT_US          2400U
 #define STEERING_CENTER_US        1550U
-#define STEERING_RIGHT_US         1050U
+#define STEERING_RIGHT_US          750U
 
 #define STEERING_ABS_MIN_US        500U
 #define STEERING_ABS_MAX_US       2500U
@@ -39,7 +45,8 @@
 
 // TIM4 calls Steering_Update() every 2 ms.
 // The servo is stepped only once per STEERING_SLEW_TICK_DIVIDER timer ticks.
-// With 10 us every 4 ms, center->left takes about 232 ms and center->right about 188 ms.
+// With 8 us every 4 ms, centre->left (850 us) takes about 425 ms and
+// centre->right (800 us) about 400 ms.
 #define STEERING_SLEW_US_PER_STEP      8U
 #define STEERING_SLEW_TICK_DIVIDER      2U
 
@@ -70,17 +77,19 @@
 #error "STEERING_RIGHT_US must differ from STEERING_CENTER_US"
 #endif
 
-// NOT CALIBRATED YET -- the values above (2200 / 1550 / 1050) disagree with
-// the comment in main.c's self-test block, which states the measured safe
-// limits are 2130 / 1550 / 1080. If main.c is the correct one, positions 0
-// and 100 currently command 70 us past the left stop and 30 us past the
-// right stop. A servo held against its stop stalls and draws its full stall
-// current continuously from the same 2S pack -- a raised baseline rather
-// than a spike, so it does not look like a fault on a scope.
+// CALIBRATED. The earlier 2200 / 1050 guesses, and the 2130 / 1080 figures
+// quoted in main.c's self-test comment, were both wrong and both untested;
+// they are superseded by the measurement recorded above.
 //
-// Measure it on the bench, then fix the values here AND the comment in
-// main.c together, and delete this warning.
-#warning "Steering limits are UNVERIFIED: steering.c says 2200/1050 us, main.c comment says 2130/1080 us. Measure before driving to positions 0 or 100."
+// Why this mattered: a servo commanded past its stop stalls and draws its full
+// stall current continuously from the same 2S pack. That is a raised baseline
+// rather than a spike, so it does not look like a fault on a scope -- it just
+// quietly heats the servo and eats pack current for as long as the wheel is
+// held over.
+//
+// If the linkage is ever changed, re-measure with the console keys ('=' to
+// centre, '.' and ',' for 50 us steps, 's' to read the pulse) and update these
+// three numbers together.
 
 static volatile uint8_t steering_enabled = 0U;
 static volatile uint16_t current_pulse_us = STEERING_CENTER_US;

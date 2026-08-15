@@ -1052,6 +1052,13 @@ static void handle_key(char c)
     case 'H':
     case '?':
         bms_dashboard_help();
+        /* Give the host firmware a chance to append its own keys. Without
+         * this the vehicle's steering, speed and bench-drive keys exist but
+         * are invisible on the help screen, which is how a key gets lost at
+         * exactly the moment someone needs it. */
+        if (s_aux_key != NULL) {
+            (void)s_aux_key('h');
+        }
         hold_output(1500);
         break;
 
@@ -1156,10 +1163,29 @@ void bms_app_run_once(void)
         }
     }
 
-    /* --- reconnect --- */
+    /* --- reconnect ---
+     *
+     * try_probe() is blocking: on a dead bus every transfer burns its full
+     * MAX17320_I2C_TIMEOUT_MS, and the host's main loop is stopped for the
+     * whole call. That is exactly why the manual probe key is refused while
+     * the vehicle is driving -- and this automatic path used to run anyway,
+     * which pushed the host's own drive watchdog out by the probe duration
+     * while the motor ramp, running from a timer interrupt, kept climbing.
+     *
+     * So honour the same guard here. Losing the gauge while driving is
+     * already handled without a probe: the telemetry interlock sees the
+     * reading go stale and drops the drive itself. The reconnect simply
+     * waits for a safe moment.
+     *
+     * The guard is read directly rather than through may_block(), which
+     * prints a refusal notice -- correct for a keypress the operator made,
+     * wrong for a timer that would repeat it every couple of seconds. */
     if (!s_online && due(now, s_next_probe_ms)) {
         s_next_probe_ms = now + REPROBE_PERIOD_MS;
-        try_probe();
+
+        if ((s_may_block == NULL) || s_may_block()) {
+            try_probe();
+        }
     }
 
     /* --- a one-shot dump is on screen: leave it there, then repaint --- */
