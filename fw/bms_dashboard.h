@@ -14,6 +14,18 @@
 
 #include "max17320_monitor.h"
 
+/*
+ * What to tell a human who needs this part provisioned. The provisioning
+ * menu is compiled out of a real-time build, so that build must not send
+ * anyone hunting for a '!' key it does not have. Defined once here because
+ * both the dashboard and the console print it.
+ */
+#ifdef BMS_REALTIME_HOST
+#define BMS_PROVISION_HINT "with the bench monitor build"
+#else
+#define BMS_PROVISION_HINT "! then 2, verify, then 4"
+#endif
+
 /* Clears the screen and paints the static frame. Call once when entering
  * dashboard mode, then call render() repeatedly. */
 void bms_dashboard_enter(void);

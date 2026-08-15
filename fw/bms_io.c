@@ -23,6 +23,61 @@ static volatile uint8_t  s_rx[RX_RING_SIZE];
 static volatile uint16_t s_rx_head;
 static volatile uint16_t s_rx_tail;
 
+/*
+ * Transmit ring, drained from the TXE interrupt.
+ *
+ * Blocking transmission is fine for a dedicated monitor but not when this
+ * runs alongside motor control: one dashboard frame is ~1.3 kB, which at
+ * 115200 is over 100 ms spent inside HAL_UART_Transmit. That would stall
+ * the main loop that parses drive commands and services the watchdog.
+ *
+ * So bms_print() copies into this ring and returns immediately. The ring
+ * holds several frames; a frame is emitted every 500 ms and drains in
+ * ~115 ms, so it never backs up in practice. If it ever did, a message is
+ * dropped WHOLE rather than truncated -- half an ANSI escape sequence
+ * would corrupt the terminal, while a missing frame is invisible.
+ */
+#define TX_RING_SIZE 4096u
+static volatile uint8_t  s_tx[TX_RING_SIZE];
+static volatile uint16_t s_tx_head;
+static volatile uint16_t s_tx_tail;
+static volatile uint32_t s_tx_dropped;
+
+static uint16_t tx_free_space(void)
+{
+    uint16_t head = s_tx_head;
+    uint16_t tail = s_tx_tail;
+
+    return (uint16_t)((tail + TX_RING_SIZE - head - 1u) % TX_RING_SIZE);
+}
+
+static void tx_push(const uint8_t *data, uint16_t len)
+{
+    uint16_t head;
+
+    if ((s_huart == NULL) || (len == 0u)) {
+        return;
+    }
+    if (len > tx_free_space()) {
+        s_tx_dropped++;
+        return;                     /* drop the whole message, never part */
+    }
+
+    head = s_tx_head;
+    for (uint16_t i = 0; i < len; i++) {
+        s_tx[head] = data[i];
+        head = (uint16_t)((head + 1u) % TX_RING_SIZE);
+    }
+    s_tx_head = head;
+
+    __HAL_UART_ENABLE_IT(s_huart, UART_IT_TXE);
+}
+
+uint32_t bms_io_dropped(void)
+{
+    return s_tx_dropped;
+}
+
 void bms_io_init(UART_HandleTypeDef *huart)
 {
     s_huart = huart;
@@ -51,6 +106,17 @@ void LPUART1_IRQHandler(void)
         return;
     }
 
+    /* --- transmit --- */
+    if (__HAL_UART_GET_FLAG(huart, UART_FLAG_TXE) &&
+        __HAL_UART_GET_IT_SOURCE(huart, UART_IT_TXE)) {
+        if (s_tx_head == s_tx_tail) {
+            __HAL_UART_DISABLE_IT(huart, UART_IT_TXE);
+        } else {
+            huart->Instance->TDR = s_tx[s_tx_tail];
+            s_tx_tail = (uint16_t)((s_tx_tail + 1u) % TX_RING_SIZE);
+        }
+    }
+
     /* An overrun latches ORE and stops RXNE from ever setting again, so
      * it has to be cleared even though the byte behind it is lost. */
     if (__HAL_UART_GET_FLAG(huart, UART_FLAG_ORE)) {
@@ -70,10 +136,10 @@ void LPUART1_IRQHandler(void)
 
 void bms_print(const char *s)
 {
-    if ((s_huart == NULL) || (s == NULL)) {
+    if (s == NULL) {
         return;
     }
-    (void)HAL_UART_Transmit(s_huart, (const uint8_t *)s, (uint16_t)strlen(s), HAL_MAX_DELAY);
+    tx_push((const uint8_t *)s, (uint16_t)strlen(s));
 }
 
 void bms_printf(const char *fmt, ...)
@@ -95,7 +161,7 @@ void bms_printf(const char *fmt, ...)
     if ((size_t)n >= sizeof(s_buf)) {
         n = (int)sizeof(s_buf) - 1;   /* truncated, send what fits */
     }
-    (void)HAL_UART_Transmit(s_huart, (const uint8_t *)s_buf, (uint16_t)n, HAL_MAX_DELAY);
+    tx_push((const uint8_t *)s_buf, (uint16_t)n);
 }
 
 bool bms_getc(char *out)

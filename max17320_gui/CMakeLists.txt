@@ -70,8 +70,12 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # BURN typed at the console and refuses below MAX17320_MIN_COMMIT_MV.
     MAX17320_I_KNOW_THIS_BURNS_NVM=1
 
-    # nIPrtTh1 = 0x7F80: +10.16 A charge / -10.24 A discharge, the ceiling
-    # of the part's own current range at a 5 mOhm shunt.
+    # Raises the four current-limit registers to the ceiling of the part's
+    # own range at a 5 mOhm shunt: nIPrtTh1 = 0x7E80 (+10.08 A charge /
+    # -10.24 A discharge) and nODSCTh = 0x0166 (OCTH +7.75 A, the real
+    # charge ceiling). OCCP is 0x7E and not 0x7F on purpose -- see
+    # ../fw/max17320_config.h, where these values live. This is only ever
+    # stated here; max17320_config.h already defaults it to 1.
     MAX17320_MAX_CURRENT_LIMITS=1
 )
 

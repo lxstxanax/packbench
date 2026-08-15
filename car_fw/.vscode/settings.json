@@ -1,0 +1,35 @@
+{
+    // This folder IS the CMake project root (unlike the workspace root, where
+    // the two firmware projects sit in subfolders). Everything below mirrors
+    // ../.vscode/settings.json, which is the configuration that works.
+    //
+    // Removed 2026-08-15: "cmake.cmakePath": "cube-cmake" and
+    // "-DCMAKE_COMMAND=cube-cmake" in cmake.configureArgs. That wrapper no
+    // longer exists on this machine and broke the build after the toolchain
+    // moved. The presets in CMakePresets.json already pick the generator, the
+    // toolchain file and the build directory, so no hardcoded tool paths are
+    // needed here -- cmake, ninja and arm-none-eabi-* come from PATH
+    // (currently /opt/st/stm32cubeclt_1.22.0/...).
+    "cmake.sourceDirectory": "${workspaceFolder}",
+    "cmake.useCMakePresets": "always",
+    "cmake.preferredGenerators": [
+        "Ninja"
+    ],
+
+    // ../fw/ is compiled in from outside the CubeMX tree, so point the C
+    // tooling at the generated compile_commands.json (same file as
+    // .vscode/c_cpp_properties.json names).
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/Debug/compile_commands.json",
+
+    // The task buttons live in the status bar, so keep it on.
+    "workbench.statusBar.visible": true,
+
+    "files.associations": {
+        "*.ioc": "ini"
+    },
+    "files.exclude": {
+        "**/build": true,
+        "**/__pycache__": true,
+        "**/.venv": true
+    }
+}

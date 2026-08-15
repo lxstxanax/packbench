@@ -1,0 +1,40 @@
+{
+    "version": "0.2.0",
+
+    // Only one target can be debugged from this folder: the car.
+    // (Paths were on stm32cubeclt_1.21.0, which is no longer installed --
+    // the bundle on this machine is stm32cubeclt_1.22.0.)
+    "configurations": [
+        {
+            "name": "Debug car (STM32G474RE, ST-Link)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "servertype": "openocd",
+            "device": "STM32G474RE",
+            "interface": "swd",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/motor_uart_pwm_nucleo.elf",
+            "configFiles": [
+                "interface/stlink.cfg",
+                "target/stm32g4x.cfg"
+            ],
+            "searchDir": [
+                "/usr/share/openocd/scripts"
+            ],
+            "serverpath": "/usr/bin/openocd",
+            "svdFile": "/opt/st/stm32cubeclt_1.22.0/STMicroelectronics_CMSIS_SVD/STM32G474.svd",
+            "gdbPath": "gdb-multiarch",
+            "runToEntryPoint": "main",
+            "preLaunchTask": "Build car",
+            "postDebugTask": "Post Debug Task",
+            "preLaunchCommands": [
+                "monitor reset halt"
+            ],
+            "showDevDebugOutput": "none",
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 4
+            }
+        }
+    ]
+}

@@ -169,126 +169,138 @@ max17320_status_t max17320_monitor_init(max17320_monitor_t *mon, I2C_HandleTypeD
  * Poll
  * ------------------------------------------------------------------ */
 
-/* Reads one register into a local, bailing out of the whole pass on the
- * first bus error so a half-updated snapshot is never published. */
-#define RD(addr_, dst_)                                                   \
-    do {                                                                  \
-        st = max17320_read_reg(mon->hi2c, (addr_), &(dst_));               \
-        if (st != MAX17320_OK) {                                          \
-            mon->fail_count++;                                            \
-            snap->last_error = st;                                        \
-            return st;                                                    \
-        }                                                                 \
-    } while (0)
+/* Addresses in R_* order. Kept next to the enum so the two cannot drift. */
+static const uint16_t POLL_ADDR[R_COUNT] = {
+    [R_STATUS]      = MAX17320_REG_STATUS,
+    [R_PROTSTATUS]  = MAX17320_REG_PROTSTATUS,
+    [R_PROTALRT]    = MAX17320_REG_PROTALRT,
+    [R_HPROTCFG2]   = MAX17320_REG_HPROTCFG2,
+    [R_STATUS2]     = MAX17320_REG_STATUS2,
+    [R_FSTAT]       = MAX17320_REG_FSTAT,
+    [R_COMMSTAT]    = MAX17320_REG_COMMSTAT,
+    [R_CONFIG]      = MAX17320_REG_CONFIG,
+    [R_CONFIG2]     = MAX17320_REG_CONFIG2,
+    [R_NBATTSTATUS] = MAX17320_REG_NBATTSTATUS,
+    [R_DEVNAME]     = MAX17320_REG_DEVNAME,
+    [R_CELL1]       = MAX17320_REG_CELL1,
+    [R_CELL2]       = MAX17320_REG_CELL2,
+    [R_AVGCELL1]    = MAX17320_REG_AVGCELL1,
+    [R_AVGCELL2]    = MAX17320_REG_AVGCELL2,
+    [R_VCELL]       = MAX17320_REG_VCELL,
+    [R_AVGVCELL]    = MAX17320_REG_AVGVCELL,
+    [R_BATT]        = MAX17320_REG_BATT,
+    [R_PCKP]        = MAX17320_REG_PCKP,
+    [R_CURRENT]     = MAX17320_REG_CURRENT,
+    [R_AVGCURRENT]  = MAX17320_REG_AVGCURRENT,
+    [R_POWER]       = MAX17320_REG_POWER,
+    [R_ICHGTERM]    = MAX17320_REG_ICHGTERM,
+    [R_REPSOC]      = MAX17320_REG_REPSOC,
+    [R_VFSOC]       = MAX17320_REG_VFSOC,
+    [R_AGE]         = MAX17320_REG_AGE,
+    [R_FULLSOCTHR]  = MAX17320_REG_FULLSOCTHR,
+    [R_REPCAP]      = MAX17320_REG_REPCAP,
+    [R_FULLCAPREP]  = MAX17320_REG_FULLCAPREP,
+    [R_DESIGNCAP]   = MAX17320_REG_DESIGNCAP,
+    [R_CYCLES]      = MAX17320_REG_CYCLES,
+    [R_TEMP]        = MAX17320_REG_TEMP,
+    [R_AVGTA]       = MAX17320_REG_AVGTA,
+    [R_DIETEMP]     = MAX17320_REG_DIETEMP,
+    [R_TTE]         = MAX17320_REG_TTE,
+    [R_TTF]         = MAX17320_REG_TTF,
+    [R_CHARGINGCURRENT] = MAX17320_REG_CHARGINGCURRENT,
+    [R_CHARGINGVOLTAGE] = MAX17320_REG_CHARGINGVOLTAGE,
+};
 
-max17320_status_t max17320_monitor_poll(max17320_monitor_t *mon, max17320_snapshot_t *snap)
+/*
+ * The safety-critical prefix of a pass, published on its own.
+ *
+ * These four registers are read first (see the R_* enum) and everything an
+ * interlock acts on is derived from them alone, so there is no reason to
+ * hold them back until the ~34 remaining reads of voltages, capacities and
+ * temperatures have finished. Publishing here makes the FET and fault
+ * state visible one pass-worth of reads sooner; the pass rate (250 ms in
+ * the host build) still dominates the total latency.
+ *
+ * Called again from decode_snapshot() at the end of a pass, so there is
+ * exactly one place that turns these words into flags.
+ */
+_Static_assert((R_STATUS == 0) && (R_PROTSTATUS == 1) &&
+               (R_PROTALRT == 2) && (R_HPROTCFG2 == 3) &&
+               (R_SAFETY_LAST == R_HPROTCFG2),
+               "the safety registers must be the first ones a pass reads");
+
+static void publish_safety(const max17320_monitor_t *mon, max17320_snapshot_t *snap)
 {
-    max17320_status_t st;
-    uint16_t status, prot_status, prot_alrt, hprot_cfg2, status2, fstat;
-    uint16_t commstat, config, config2, nbatt_status, dev_name;
-    uint16_t cell1, cell2, avg_cell1, avg_cell2, vcell, avg_vcell, batt, pckp;
-    uint16_t current, avg_current, power, ichgterm;
-    uint16_t rep_soc, vf_soc, age, full_soc_thr, rep_cap, full_cap, design_cap, cycles;
-    uint16_t temp, avg_ta, die_temp, tte, ttf;
-    uint16_t chg_current, chg_voltage;
+    const uint16_t *r = mon->raw;
 
-    if ((mon == NULL) || (snap == NULL) || (mon->hi2c == NULL)) {
-        return MAX17320_ERR_ARG;
-    }
+    snap->status      = r[R_STATUS];
+    snap->prot_status = r[R_PROTSTATUS];
+    snap->prot_alrt   = r[R_PROTALRT];
+    snap->hprot_cfg2  = r[R_HPROTCFG2];
 
-    /* Faults and FET state first: if the bus dies mid-pass, these are the
-     * values worth having captured. */
-    RD(MAX17320_REG_STATUS,      status);
-    RD(MAX17320_REG_PROTSTATUS,  prot_status);
-    RD(MAX17320_REG_PROTALRT,    prot_alrt);
-    RD(MAX17320_REG_HPROTCFG2,   hprot_cfg2);
-    RD(MAX17320_REG_STATUS2,     status2);
-    RD(MAX17320_REG_FSTAT,       fstat);
-    RD(MAX17320_REG_COMMSTAT,    commstat);
-    RD(MAX17320_REG_CONFIG,      config);
-    RD(MAX17320_REG_CONFIG2,     config2);
-    RD(MAX17320_REG_NBATTSTATUS, nbatt_status);
-    RD(MAX17320_REG_DEVNAME,     dev_name);
+    /* HProtCfg2 D1:D0 is the only live readback of the FETs there is. */
+    snap->chg_fet_on = (r[R_HPROTCFG2] & MAX17320_HPROTCFG2_CHGS) != 0u;
+    snap->dis_fet_on = (r[R_HPROTCFG2] & MAX17320_HPROTCFG2_DISS) != 0u;
 
-    RD(MAX17320_REG_CELL1,       cell1);
-    RD(MAX17320_REG_CELL2,       cell2);
-    RD(MAX17320_REG_AVGCELL1,    avg_cell1);
-    RD(MAX17320_REG_AVGCELL2,    avg_cell2);
-    RD(MAX17320_REG_VCELL,       vcell);
-    RD(MAX17320_REG_AVGVCELL,    avg_vcell);
-    RD(MAX17320_REG_BATT,        batt);
-    RD(MAX17320_REG_PCKP,        pckp);
+    snap->full      = (r[R_PROTSTATUS] & MAX17320_PROT_FULL) != 0u;
+    snap->ship      = (r[R_PROTSTATUS] & MAX17320_PROTSTATUS_SHIP) != 0u;
+    snap->perm_fail = (r[R_PROTSTATUS] & MAX17320_PROT_PERMFAIL) != 0u;
+    snap->faulted   = (r[R_PROTSTATUS] & MAX17320_PROT_FAULT_MASK) != 0u;
+    snap->por_seen  = (r[R_STATUS] & MAX17320_STATUS_POR) != 0u;
 
-    RD(MAX17320_REG_CURRENT,     current);
-    RD(MAX17320_REG_AVGCURRENT,  avg_current);
-    RD(MAX17320_REG_POWER,       power);
-    RD(MAX17320_REG_ICHGTERM,    ichgterm);
+    snap->safety_ms = HAL_GetTick();
+    snap->safety_seq++;
+}
 
-    RD(MAX17320_REG_REPSOC,      rep_soc);
-    RD(MAX17320_REG_VFSOC,       vf_soc);
-    RD(MAX17320_REG_AGE,         age);
-    RD(MAX17320_REG_FULLSOCTHR,  full_soc_thr);
-    RD(MAX17320_REG_REPCAP,      rep_cap);
-    RD(MAX17320_REG_FULLCAPREP,  full_cap);
-    RD(MAX17320_REG_DESIGNCAP,   design_cap);
-    RD(MAX17320_REG_CYCLES,      cycles);
+/* Turns a completed set of raw reads into engineering units. Split out so
+ * the resumable and the blocking poll share exactly one decode. */
+static void decode_snapshot(max17320_monitor_t *mon, max17320_snapshot_t *snap)
+{
+    const uint16_t *r = mon->raw;
 
-    RD(MAX17320_REG_TEMP,        temp);
-    RD(MAX17320_REG_AVGTA,       avg_ta);
-    RD(MAX17320_REG_DIETEMP,     die_temp);
-    RD(MAX17320_REG_TTE,         tte);
-    RD(MAX17320_REG_TTF,         ttf);
+    publish_safety(mon, snap);   /* re-publish: same words, same flags */
 
-    RD(MAX17320_REG_CHARGINGCURRENT, chg_current);
-    RD(MAX17320_REG_CHARGINGVOLTAGE, chg_voltage);
+    snap->status2      = r[R_STATUS2];
+    snap->fstat        = r[R_FSTAT];
+    snap->commstat     = r[R_COMMSTAT];
+    snap->config       = r[R_CONFIG];
+    snap->config2      = r[R_CONFIG2];
+    snap->nbatt_status = r[R_NBATTSTATUS];
+    snap->dev_name     = r[R_DEVNAME];
 
-    /* Whole pass succeeded -- publish it. */
-    snap->status       = status;
-    snap->prot_status  = prot_status;
-    snap->prot_alrt    = prot_alrt;
-    snap->hprot_cfg2   = hprot_cfg2;
-    snap->status2      = status2;
-    snap->fstat        = fstat;
-    snap->commstat     = commstat;
-    snap->config       = config;
-    snap->config2      = config2;
-    snap->nbatt_status = nbatt_status;
-    snap->dev_name     = dev_name;
-
-    snap->cell1_01mv      = dec_volt_01mv(cell1);
-    snap->cell2_01mv      = dec_volt_01mv(cell2);
-    snap->avg_cell1_01mv  = dec_volt_01mv(avg_cell1);
-    snap->avg_cell2_01mv  = dec_volt_01mv(avg_cell2);
-    snap->vcell_01mv      = dec_volt_01mv(vcell);
-    snap->avg_vcell_01mv  = dec_volt_01mv(avg_vcell);
-    snap->batt_01mv       = dec_pack_01mv(batt);
-    snap->pckp_01mv       = dec_pack_01mv(pckp);
+    snap->cell1_01mv      = dec_volt_01mv(r[R_CELL1]);
+    snap->cell2_01mv      = dec_volt_01mv(r[R_CELL2]);
+    snap->avg_cell1_01mv  = dec_volt_01mv(r[R_AVGCELL1]);
+    snap->avg_cell2_01mv  = dec_volt_01mv(r[R_AVGCELL2]);
+    snap->vcell_01mv      = dec_volt_01mv(r[R_VCELL]);
+    snap->avg_vcell_01mv  = dec_volt_01mv(r[R_AVGVCELL]);
+    snap->batt_01mv       = dec_pack_01mv(r[R_BATT]);
+    snap->pckp_01mv       = dec_pack_01mv(r[R_PCKP]);
     snap->imbalance_01mv  = abs32(snap->cell1_01mv - snap->cell2_01mv);
 
-    snap->current_01ma     = dec_curr_01ma(current);
-    snap->avg_current_01ma = dec_curr_01ma(avg_current);
-    snap->power_mw         = dec_power_mw(power);
-    snap->ichgterm_01ma    = dec_curr_01ma(ichgterm);
+    snap->current_01ma     = dec_curr_01ma(r[R_CURRENT]);
+    snap->avg_current_01ma = dec_curr_01ma(r[R_AVGCURRENT]);
+    snap->power_mw         = dec_power_mw(r[R_POWER]);
+    snap->ichgterm_01ma    = dec_curr_01ma(r[R_ICHGTERM]);
 
-    snap->rep_soc_01pct      = dec_pct_01(rep_soc);
-    snap->vf_soc_01pct       = dec_pct_01(vf_soc);
-    snap->age_01pct          = dec_pct_01(age);
-    snap->full_soc_thr_01pct = dec_pct_01(full_soc_thr);
-    snap->rep_cap_mah        = dec_cap_mah(rep_cap);
-    snap->full_cap_mah       = dec_cap_mah(full_cap);
-    snap->design_cap_mah     = dec_cap_mah(design_cap);
-    snap->cycles_001         = (int32_t)cycles * 25; /* LSB = 25% of a cycle */
+    snap->rep_soc_01pct      = dec_pct_01(r[R_REPSOC]);
+    snap->vf_soc_01pct       = dec_pct_01(r[R_VFSOC]);
+    snap->age_01pct          = dec_pct_01(r[R_AGE]);
+    snap->full_soc_thr_01pct = dec_pct_01(r[R_FULLSOCTHR]);
+    snap->rep_cap_mah        = dec_cap_mah(r[R_REPCAP]);
+    snap->full_cap_mah       = dec_cap_mah(r[R_FULLCAPREP]);
+    snap->design_cap_mah     = dec_cap_mah(r[R_DESIGNCAP]);
+    snap->cycles_001         = (int32_t)r[R_CYCLES] * 25; /* LSB = 25% of a cycle */
 
-    snap->temp_01c     = dec_temp_01c(temp);
-    snap->avg_temp_01c = dec_temp_01c(avg_ta);
-    snap->die_temp_01c = dec_temp_01c(die_temp);
+    snap->temp_01c     = dec_temp_01c(r[R_TEMP]);
+    snap->avg_temp_01c = dec_temp_01c(r[R_AVGTA]);
+    snap->die_temp_01c = dec_temp_01c(r[R_DIETEMP]);
 
-    snap->charging_current_01ma = dec_curr_01ma(chg_current);
-    snap->charging_voltage_01mv = dec_volt_01mv(chg_voltage);
+    snap->charging_current_01ma = dec_curr_01ma(r[R_CHARGINGCURRENT]);
+    snap->charging_voltage_01mv = dec_volt_01mv(r[R_CHARGINGVOLTAGE]);
 
-    /* --- derived state --- */
-    snap->chg_fet_on = (hprot_cfg2 & MAX17320_HPROTCFG2_CHGS) != 0u;
-    snap->dis_fet_on = (hprot_cfg2 & MAX17320_HPROTCFG2_DISS) != 0u;
+    /* --- derived state (the FET and fault flags came from
+     *     publish_safety() above) --- */
 
     /* Sign convention confirmed from nProtMiscTh.CurrDet: current above
      * +CurrDet is charging, below -CurrDet is discharging, in between the
@@ -303,18 +315,13 @@ max17320_status_t max17320_monitor_poll(max17320_monitor_t *mon, max17320_snapsh
 
     /* TTE/TTF only mean anything in the matching direction, and 0xFFFF is
      * the saturation value, not 102 hours of runtime. */
-    snap->tte_s     = dec_time_s(tte);
-    snap->ttf_s     = dec_time_s(ttf);
-    snap->tte_valid = (snap->flow == MAX17320_FLOW_DISCHARGING) && (tte != 0xFFFFu);
-    snap->ttf_valid = (snap->flow == MAX17320_FLOW_CHARGING)    && (ttf != 0xFFFFu);
+    snap->tte_s     = dec_time_s(r[R_TTE]);
+    snap->ttf_s     = dec_time_s(r[R_TTF]);
+    snap->tte_valid = (snap->flow == MAX17320_FLOW_DISCHARGING) && (r[R_TTE] != 0xFFFFu);
+    snap->ttf_valid = (snap->flow == MAX17320_FLOW_CHARGING)    && (r[R_TTF] != 0xFFFFu);
 
-    snap->full           = (prot_status & MAX17320_PROT_FULL) != 0u;
-    snap->ship           = (prot_status & MAX17320_PROTSTATUS_SHIP) != 0u;
-    snap->perm_fail      = (prot_status & MAX17320_PROT_PERMFAIL) != 0u;
-    snap->faulted        = (prot_status & MAX17320_PROT_FAULT_MASK) != 0u;
-    snap->hibernating    = (status2 & MAX17320_STATUS2_HIB) != 0u;
-    snap->data_not_ready = (fstat & MAX17320_FSTAT_DNR) != 0u;
-    snap->por_seen       = (status & MAX17320_STATUS_POR) != 0u;
+    snap->hibernating    = (r[R_STATUS2] & MAX17320_STATUS2_HIB) != 0u;
+    snap->data_not_ready = (r[R_FSTAT] & MAX17320_FSTAT_DNR) != 0u;
 
     /* --- can any of this be believed? ---
      * Cell channels in a 2S pack are Cell1 = CELL1-CSP and Cell2 =
@@ -333,11 +340,62 @@ max17320_status_t max17320_monitor_poll(max17320_monitor_t *mon, max17320_snapsh
     snap->seq++;
     snap->last_error = MAX17320_OK;
     mon->fail_count  = 0;
-
-    return MAX17320_OK;
 }
 
-#undef RD
+bool max17320_monitor_poll_step(max17320_monitor_t *mon, max17320_snapshot_t *snap,
+                                uint8_t budget)
+{
+    if ((mon == NULL) || (snap == NULL) || (mon->hi2c == NULL) || (budget == 0u)) {
+        return false;
+    }
+
+    for (uint8_t n = 0; n < budget; n++) {
+        uint8_t idx = mon->poll_idx;
+        max17320_status_t st = max17320_read_reg(mon->hi2c, POLL_ADDR[idx],
+                                                 &mon->raw[idx]);
+        if (st != MAX17320_OK) {
+            /* Abandon the pass rather than mixing samples from before and
+             * after a bus glitch. */
+            mon->poll_idx = 0;
+            mon->fail_count++;
+            snap->last_error = st;
+            return false;
+        }
+
+        mon->poll_idx++;
+
+        /* Fault words and live FET state are in hand: hand them over now
+         * rather than at the end of the pass. An interlock reading
+         * bms_app_pack_state() sees a protector trip a pass-worth of reads
+         * earlier, and on a bus that dies mid-pass these were still read
+         * successfully and are worth keeping. */
+        if (idx == (uint8_t)R_SAFETY_LAST) {
+            publish_safety(mon, snap);
+        }
+
+        if (mon->poll_idx >= (uint8_t)R_COUNT) {
+            mon->poll_idx = 0;
+            decode_snapshot(mon, snap);
+            return true;
+        }
+    }
+    return false;
+}
+
+max17320_status_t max17320_monitor_poll(max17320_monitor_t *mon, max17320_snapshot_t *snap)
+{
+    if ((mon == NULL) || (snap == NULL) || (mon->hi2c == NULL)) {
+        return MAX17320_ERR_ARG;
+    }
+
+    mon->poll_idx = 0;
+    while (!max17320_monitor_poll_step(mon, snap, (uint8_t)R_COUNT)) {
+        if (snap->last_error != MAX17320_OK) {
+            return snap->last_error;
+        }
+    }
+    return MAX17320_OK;
+}
 
 /* ------------------------------------------------------------------ *
  * The single permitted write

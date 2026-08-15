@@ -1,14 +1,43 @@
 {
     "version": "0.2.0",
+
+    // One configuration per firmware project, named after its target, the same
+    // way the Build/Flash tasks are. Picking the wrong one loads the wrong .elf
+    // onto whichever board is attached.
     "configurations": [
         {
-            "name": "Debug (OpenOCD, Linux)",
+            "name": "Debug car (car_fw, OpenOCD)",
             "type": "cortex-debug",
             "request": "launch",
             "servertype": "openocd",
             "device": "STM32G474RE",
             "interface": "swd",
             "runToEntryPoint": "main",
+            "cwd": "${workspaceFolder}/car_fw",
+            "executable": "${workspaceFolder}/car_fw/build/Debug/motor_uart_pwm_nucleo.elf",
+            "svdFile": "/opt/st/stm32cubeclt_1.22.0/STMicroelectronics_CMSIS_SVD/STM32G474.svd",
+            "configFiles": [
+                "interface/stlink.cfg",
+                "target/stm32g4x.cfg"
+            ],
+            "gdbPath": "gdb-multiarch",
+            "preLaunchTask": "Build car",
+            "postDebugTask": "Post Debug Task",
+            "showDevDebugOutput": "none",
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 4
+            }
+        },
+        {
+            "name": "Debug monitor (max17320_gui, OpenOCD)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "servertype": "openocd",
+            "device": "STM32G474RE",
+            "interface": "swd",
+            "runToEntryPoint": "main",
+            "cwd": "${workspaceFolder}/max17320_gui",
             "executable": "${workspaceFolder}/max17320_gui/build/Debug/max17320_gui.elf",
             "svdFile": "/opt/st/stm32cubeclt_1.22.0/STMicroelectronics_CMSIS_SVD/STM32G474.svd",
             "configFiles": [
@@ -16,7 +45,7 @@
                 "target/stm32g4x.cfg"
             ],
             "gdbPath": "gdb-multiarch",
-            "preLaunchTask": "Build",
+            "preLaunchTask": "Build monitor",
             "postDebugTask": "Post Debug Task",
             "showDevDebugOutput": "none",
             "liveWatch": {

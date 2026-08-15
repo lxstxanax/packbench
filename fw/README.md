@@ -3,12 +3,24 @@
 Read-only I2C monitoring of a MAX17320G2 2S4P BMS board, with a live ANSI
 dashboard and a JSON stream on the ST-Link Virtual COM Port.
 
-This is the monitoring counterpart to the NVM provisioning driver in
-`github.com/lxstxanax/stm32f767zi-max17320-bms`. The I2C transport is
-carried over from it; **the NVM half is deliberately not ported** — no
-shadow-config write, no `commit_nvm`, no `max17320_config.h`. The part
-allows only 7 lifetime NVM writes, so the safest gate is code that does
-not exist. Provision with the original F7 driver.
+These sources are **shared by two projects** and they are not on the same
+pins or built with the same options:
+
+| | Bench monitor | Car |
+|---|---|---|
+| Project | `../max17320_gui/` | `../car_fw/` |
+| Gauge bus | **I2C1 — PA15 (SCL) / PB7 (SDA)**, CN7 | **I2C3 — PC8 (SCL) / PC9 (SDA)**, CN10 |
+| Provisioning (`max17320_provision.c`) | compiled in | **not compiled at all** |
+| Blocking modes (`!`, `w`, `t`) | present | removed by `BMS_REALTIME_HOST=1` |
+| Shares the loop with | nothing | motor, servo, Raspberry Pi link |
+
+The I2C transport comes from the NVM provisioning driver in
+`github.com/lxstxanax/stm32f767zi-max17320-bms`. The provisioning half was
+later ported here as `max17320_provision.c`, but it is **doubly gated**: it
+is only compiled by the bench monitor, and only acts when that project also
+defines `MAX17320_I_KNOW_THIS_BURNS_NVM=1`. The part allows 7 lifetime NVM
+writes, so the car — which is the build most likely to be reflashed in a
+hurry — simply does not contain the code.
 
 ## Files
 
@@ -16,6 +28,9 @@ not exist. Provision with the original F7 driver.
 |---|---|
 | `max17320.h/.c` | I2C transport: probe, word read/write, block read. Datasheet Table 116 addressing (0x36 for 0x000–0x0FF, 0x0B for 0x100–0x1FF). |
 | `max17320_monitor.h/.c` | Register map, fixed-point decoding, derived pack state, bit-name tables, and the one permitted write (alert clearing). |
+| `max17320_provision.h/.c` | Shadow-RAM config write, verify, and the one NVM commit. **Bench monitor only** — `car_fw` does not build it. |
+| `max17320_config.h` | The target pack profile the provisioner writes, including the current-limit registers. Read by `max17320_provision.c` only. |
+| `bms_pins.h` | The I2C pins the gauge is on and the names printed for them — the single source of truth, defaulting to the bench monitor's PA15/PB7 and overridden by `car_fw` to PC8/PC9. |
 | `bms_io.h/.c` | Blocking console on LPUART1 + non-blocking key input + fixed-point formatting (no `%f`, so no float printf in the image). |
 | `bms_dashboard.h/.c` | ANSI dashboard, JSON emitter, raw dump, help. |
 | `bms_app.h/.c` | Superloop scheduler: poll 250 ms, render 500 ms, keys every iteration. |
@@ -26,6 +41,8 @@ datasheet Rev 12; the working notes with per-table citations are in
 [`../notes/max17320-registers.md`](../notes/max17320-registers.md).
 
 ## Hardware
+
+### Bench monitor — `../max17320_gui/`, I2C1 on CN7
 
 | Signal | BMS board P1 | Nucleo G474RE |
 |---|---|---|
@@ -38,17 +55,36 @@ Three consecutive positions in one column of the CN7 morpho header, with
 3V3 for the pull-ups on the same connector. The morpho pin names are
 printed on the bottom silkscreen — look for `PA15`, `GND`, `PB7`.
 
-Three things that will cost you an evening if missed:
+### Car — `../car_fw/`, I2C3 on CN10
+
+| Signal | BMS board P1 | Nucleo G474RE |
+|---|---|---|
+| SCL | P1.3 | PC8 = **CN10 pin 2** |
+| SDA | P1.2 | PC9 = **CN10 pin 1** |
+| GND | P1.5 (AGND) | **CN10 pin 9** |
+| pull-ups | — | 4.7 k from each line to 3V3 (CN7 pin 16 or CN6 pin 4) |
+
+`PC8.Signal=I2C3_SCL` / `PC9.Signal=I2C3_SDA` in
+`../car_fw/motor_uart_pwm_nucleo.ioc`, and the same pair is compiled into the
+firmware's console messages from `../car_fw/CMakeLists.txt`.
+
+> **Never wire the car's gauge by the bench monitor's table above.** On
+> `car_fw`, **PB7 is `USART1_RX` — the Raspberry Pi joystick link** (PB6 is
+> `USART1_TX`), and PA15 is not configured at all. Following the bench
+> monitor's wiring on the car costs you the command link and gets you no I2C.
+
+Things that will cost you an evening if missed:
 
 1. **The BMS board has no pull-ups.** Net `SDA` is exactly {P1.2, U1.9} and
    `SCL` is exactly {P1.3, U1.8} in both the schematic and the PCB netlist.
    Fit your own.
-2. **Do not move I2C1 to PB8/PB9 (`D14`/`D15`).** PB8 is `PB8-BOOT0`, and
-   with the factory `nSWBOOT0` option byte BOOT0 is sampled from the pin.
-   An I2C bus idles high, including through reset, so a pull-up there boots
-   the MCU into the system bootloader instead of your firmware — and the
-   board's BOOT0 shunt JP7 is not fitted, so nothing holds the pin low.
-   The PA15/PB7 mapping CubeMX picked avoids this entirely.
+2. **Keep the bus off PB8/PB9 (`D15`/`D14`), and off CN10 pin 3.** PB8 is
+   `PB8-BOOT0`, and with the factory `nSWBOOT0` option byte BOOT0 is sampled
+   from the pin. An I2C bus idles high, including through reset, so a pull-up
+   there boots the MCU into the system bootloader instead of your firmware —
+   and the board's BOOT0 shunt JP7 is not fitted, so nothing holds the pin
+   low. Neither project maps I2C there; the trap is a slipped wire, and on
+   the car's CN10 corner PB8 (pin 3) is the position next to SDA (pin 1).
 3. **The gauge is powered from the pack** (BATTP → 10 Ω → IN). With no
    cells attached it does not answer, which looks exactly like a wiring
    fault.
@@ -64,9 +100,10 @@ header J3, which would short the 5 mΩ shunt and zero every current reading.
 
 ## CubeMX configuration — already done, nothing left to click
 
-The project in `../max17320_gui/` was generated from the board selector
-(NUCLEO-G474RE, "initialize all peripherals") and needs **no further CubeMX
-work**:
+### Bench monitor (`../max17320_gui/`)
+
+The project was generated from the board selector (NUCLEO-G474RE,
+"initialize all peripherals") and needs **no further CubeMX work**:
 
 - **I2C1** on PA15 (`I2C1_SCL`) and PB7 (`I2C1_SDA`), AF4 — what CubeMX
   picked by default, and a good pick: both land on CN7 next to a GND. GPIO
@@ -82,15 +119,30 @@ work**:
 - **Clock**: HSI16 → PLL → 170 MHz with boost mode, as generated.
 - **FreeRTOS**: off. The scheduler here is `HAL_GetTick()` based.
 
-## How it is wired into the CMake project
+### Car (`../car_fw/`)
 
-The sources stay outside the CubeMX tree so regeneration cannot clobber
-them. In `../max17320_gui/CMakeLists.txt`:
+Same board selector, but the pin budget is different because the motor,
+servo and Raspberry Pi link came first:
+
+- **I2C3** on PC8 (`I2C3_SCL`) and PC9 (`I2C3_SDA`) — the gauge. PA15/PB7
+  were not available: **PB7 is `USART1_RX`** from the Raspberry Pi (PB6 is
+  `USART1_TX`).
+- **TIM1** CH1/CH2 on PA8/PA9 (RPWM/LPWM), **PA6/PA7** as plain outputs
+  (R_EN/L_EN), **TIM2** CH2 on PA1 (steering servo), **TIM4** as the control
+  tick.
+- **Console**: same as the monitor — the Nucleo BSP's `hcom_uart[COM1]` =
+  LPUART1 on the ST-Link VCP, which the motor code does not use.
+
+## How it is wired into the CMake projects
+
+The sources stay outside both CubeMX trees so regeneration cannot clobber
+them. Bench monitor, `../max17320_gui/CMakeLists.txt`:
 
 ```cmake
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/../fw/max17320.c
     ${CMAKE_SOURCE_DIR}/../fw/max17320_monitor.c
+    ${CMAKE_SOURCE_DIR}/../fw/max17320_provision.c   # bench only
     ${CMAKE_SOURCE_DIR}/../fw/bms_io.c
     ${CMAKE_SOURCE_DIR}/../fw/bms_dashboard.c
     ${CMAKE_SOURCE_DIR}/../fw/bms_app.c
@@ -102,11 +154,31 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     MAX17320_RSENSE_MOHM=5
+    MAX17320_I_KNOW_THIS_BURNS_NVM=1   # arms the NVM commit
+    MAX17320_MAX_CURRENT_LIMITS=1      # what the provisioner would write
 )
 ```
 
+Car, `../car_fw/CMakeLists.txt` — the same list **without**
+`max17320_provision.c`, plus:
+
+```cmake
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+    BMS_REALTIME_HOST=1                # no blocking modes, budgeted poll
+    MAX17320_RSENSE_MOHM=5
+    BMS_SCL_PORT=GPIOC   BMS_SCL_PIN=GPIO_PIN_8    # PC8
+    BMS_SDA_PORT=GPIOC   BMS_SDA_PIN=GPIO_PIN_9    # PC9
+    "BMS_SCL_NAME=\"PC8 (CN10-2)\""
+    "BMS_SDA_NAME=\"PC9 (CN10-1)\""
+)
+```
+
+The pin macros are not cosmetic: they are what the `b` bus check and the
+probe-failure banner print. A console that names PB7 on the car would send
+somebody to unplug the Raspberry Pi link.
+
 And in `Core/Src/main.c`, inside USER CODE markers so they survive
-regeneration:
+regeneration (`&hi2c1` on the bench monitor, `&hi2c3` in the car):
 
 ```c
 /* USER CODE BEGIN Includes */
@@ -126,14 +198,16 @@ Init goes in `USER CODE BEGIN WHILE`, not `BEGIN 2`, because CubeMX places
 `BSP_COM_Init()` *after* the `BEGIN 2` block — initialising the console
 from there would hand `bms_io` a UART that does not exist yet.
 
-Build and flash — or just use the VS Code tasks (`Build`, `Flash STM32`):
+Build and flash — or use the VS Code tasks, which name their target:
+`Build car` / `Flash car`, `Build monitor` / `Flash monitor`.
 
 ```sh
-cd ../max17320_gui
+cd ../max17320_gui                     # or ../car_fw
 cmake --preset Debug
 cmake --build --preset Debug
 openocd -f interface/stlink.cfg -f target/stm32g4x.cfg \
         -c "program build/Debug/max17320_gui.elf verify reset exit"
+        # car: build/Debug/motor_uart_pwm_nucleo.elf
 ```
 
 If the shunt on the board is ever changed from 5 mΩ, rebuild with
@@ -157,6 +231,20 @@ Open the VCP at 115200 8N1 (`picocom -b 115200 /dev/ttyACM0`). Keys:
 | `p` | re-probe the gauge |
 | `!` | provisioning menu (below) |
 | `h` | help |
+
+In the car build (`BMS_REALTIME_HOST=1`) the keys that can block the loop
+for seconds are compiled out: `!`, `w`, and `t` (trip capture). Everything
+else is identical, and the poll is spread a few registers per iteration.
+
+The keys that remain but still do blocking I2C — `n`, `x`, `c`, `b`, `p` —
+are gated by `bms_app_set_block_guard()`. A host registers a predicate; when
+it returns false the command is refused with the worst-case stall printed.
+`car_fw` registers "the bridge is not armed", so those five keys work
+normally with the car stopped and are refused while it is driving. No
+predicate registered (the bench monitor) = always allowed, unchanged.
+The automatic reconnect in `bms_app_run_once()` is deliberately *not* gated:
+it still probes every 2 s while the gauge is unreachable, because gating it
+would leave the interlock blind for the rest of a trip after one bus glitch.
 
 ### `b` and `w` — telling bus faults apart
 
@@ -191,6 +279,10 @@ rendered as a 4 V cell imbalance.
 
 ## Provisioning — the `!` menu
 
+**Bench monitor only.** `max17320_provision.c` is compiled by
+`../max17320_gui/` and by nothing else; `../car_fw/` neither builds it nor
+keeps the `!` menu. Nothing in the car can write the gauge's NVM.
+
 The NVM block takes **7 writes for the life of the part**, one already
 spent at Maxim's factory test. So the menu is ordered so the free,
 reversible steps come first:
@@ -214,6 +306,25 @@ the giveaway**, and it is what the firmware tests.
 
 ### Current limits at 5 mΩ
 
+> **This is a provisioning-time setting, and the car cannot act on it.** The
+> only code that writes these registers is `max17320_provision.c`, which
+> `../car_fw/` does not compile; the car also defines `BMS_REALTIME_HOST=1`,
+> removing the menu that would have used it. So the car runs on **whatever
+> thresholds are already burned into the MAX17320's NVM**, the gauge keeps
+> enforcing them with the MCU off, and rebuilding or reflashing `car_fw`
+> cannot move them by a single milliamp. Changing them means burning one of
+> the pack's remaining NVM writes from the bench monitor (or the F7 tool).
+>
+> `MAX17320_MAX_CURRENT_LIMITS` defaults to `1` in `max17320_config.h`, so
+> **both** builds carry the max-current target table — `max17320_gui`'s
+> `CMakeLists.txt` only states it explicitly. The car reads that table for
+> one purpose: the `n` comparison.
+>
+> `n` looks its expected values up in `max17320_target_config[]` rather than
+> keeping a second copy, so a die burned with the values below **reads back
+> "ok"**. The old duplicate table reported a correctly provisioned die as
+> "differs"; it is gone, and a "differs" verdict now means what it says.
+
 `MAX17320_MAX_CURRENT_LIMITS=1` raises four registers, not one — the
 lowest ceiling wins:
 
@@ -234,7 +345,8 @@ at `0x7FFF`, so its upper byte can equal `0x7F` but never exceed it, and
 the fault fires only on "exceeds" — `0x7F` would leave slow overcharge
 protection permanently unarmed.
 
-`c` is the only write the firmware can perform. It follows the datasheet
+`c` is the only write the **car** build can perform, and the only non-NVM
+write either build can. It follows the datasheet
 order (`ProtAlrt` → 0x0000 first, then clear `Status.PA` with a
 read-modify-write) and touches no NVM — but it erases the fault history,
 which is often the only evidence of what tripped, so it asks for

@@ -1,11 +1,30 @@
 {
     "version": "2.0.0",
-    "options": {
-        "cwd": "${workspaceFolder}/max17320_gui"
-    },
+
+    // There is NO workspace-wide "options.cwd" here, on purpose.
+    //
+    // This workspace holds TWO firmware projects that flash the same kind of
+    // board over the same ST-Link. A single "Flash" button that inherited a
+    // workspace cwd programmed whichever project that cwd happened to point
+    // at -- which meant pressing Flash with the car attached could put the
+    // standalone bench monitor onto the car. Every task below therefore names
+    // its own project directory and its own .elf, and every task that touches
+    // the target says "car" or "monitor" in its label.
+    //
+    //   car      car_fw/         build/Debug/motor_uart_pwm_nucleo.elf
+    //                            motor + servo + Raspberry Pi link + pack monitor
+    //   monitor  max17320_gui/   build/Debug/max17320_gui.elf
+    //                            standalone bench monitor, no motor
+    //
+    // Tasks with no project in the label touch no firmware image: they reset
+    // or erase the attached MCU, run host tests, or open a serial view.
+
     "tasks": [
+        /* ---------------------------------------------------------------- *
+         * car  --  car_fw/  ->  motor_uart_pwm_nucleo.elf
+         * ---------------------------------------------------------------- */
         {
-            "label": "Build",
+            "label": "Build car",
             "type": "shell",
             "command": "cmake --preset Debug && cmake --build --preset Debug",
             "problemMatcher": "$gcc",
@@ -14,121 +33,74 @@
                 "isDefault": true
             },
             "options": {
+                "cwd": "${workspaceFolder}/car_fw",
                 "statusbar": {
                     "hide": false,
-                    "color": "#22d63a"
+                    "color": "#22d63a",
+                    "detail": "car_fw -> motor_uart_pwm_nucleo.elf"
                 }
             }
         },
         {
-            "label": "Clean",
+            "label": "Clean car",
             "type": "shell",
             "command": "cmake --build --preset Debug --target clean",
             "problemMatcher": [],
             "group": "build",
             "options": {
+                "cwd": "${workspaceFolder}/car_fw",
                 "statusbar": {
-                    "hide": false,
+                    "hide": true,
                     "color": "#e91f11"
                 }
             }
         },
         {
-            "label": "Clean & Rebuild",
+            "label": "Clean & Rebuild car",
             "type": "shell",
             "command": "cmake --preset Debug && cmake --build --preset Debug --clean-first",
             "problemMatcher": "$gcc",
             "group": "build",
             "options": {
+                "cwd": "${workspaceFolder}/car_fw",
                 "statusbar": {
                     "hide": false,
-                    "color": "#e9e507"
+                    "color": "#e9e507",
+                    "detail": "car_fw: full rebuild (re-emits the steering-calibration #warning)"
                 }
             }
         },
         {
-            "label": "BuildSize",
+            "label": "Size car",
             "type": "shell",
             "command": "arm-none-eabi-size",
-            "args": ["./build/Debug/max17320_gui.elf"],
+            "args": ["./build/Debug/motor_uart_pwm_nucleo.elf"],
             "group": "build",
-            "dependsOn": ["Build"],
+            "dependsOn": ["Build car"],
             "dependsOrder": "sequence",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always"
             },
             "options": {
+                "cwd": "${workspaceFolder}/car_fw",
                 "statusbar": {
+                    "hide": true,
                     "color": "#0cec2a",
                     "filePattern": ""
                 }
             }
         },
         {
-            "label": "Test Decode (host)",
-            "type": "shell",
-            "command": "cc",
-            "args": [
-                "-std=c11", "-Wall", "-Wextra",
-                "-I", "${workspaceFolder}/fw",
-                "-I", "${workspaceFolder}/fw/test",
-                "-o", "/tmp/test_decode",
-                "${workspaceFolder}/fw/test/test_decode.c",
-                "${workspaceFolder}/fw/max17320.c",
-                "${workspaceFolder}/fw/max17320_monitor.c",
-                "&&", "/tmp/test_decode"
-            ],
-            "group": "test",
-            "problemMatcher": "$gcc",
-            "presentation": {
-                "reveal": "always",
-                "clear": true
-            },
-            "options": {
-                "statusbar": {
-                    "hide": false,
-                    "color": "#22d63a",
-                    "detail": "Run the register-decoding tests on the PC (no board needed)",
-                    "icon": {
-                        "id": "beaker"
-                    }
-                }
-            }
-        },
-        {
-            "label": "OpenConfiguration",
-            "type": "shell",
-            "command": "stm32cubemx",
-            "args": ["./max17320_gui.ioc"],
-            "group": "build",
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always"
-            },
-            "options": {
-                "statusbar": {
-                    "color": "#13e6e6",
-                    "filePattern": "",
-                    "icon": {
-                        "id": "gear"
-                    }
-                }
-            }
-        },
-        {
-            "label": "Flash STM32",
+            "label": "Flash car",
             "type": "shell",
             "command": "openocd",
             "args": [
                 "-f", "interface/stlink.cfg",
                 "-f", "target/stm32g4x.cfg",
-                "-c", "program build/Debug/max17320_gui.elf verify reset exit"
+                "-c", "program build/Debug/motor_uart_pwm_nucleo.elf verify reset exit"
             ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
+            "group": "build",
             "presentation": {
                 "echo": true,
                 "reveal": "always",
@@ -138,19 +110,235 @@
                 "clear": false
             },
             "problemMatcher": [],
-            "dependsOn": ["Clean & Rebuild", "BuildSize"],
+            "dependsOn": ["Clean & Rebuild car", "Size car"],
             "dependsOrder": "sequence",
             "options": {
+                "cwd": "${workspaceFolder}/car_fw",
                 "statusbar": {
                     "hide": false,
                     "color": "#13e6e6",
-                    "detail": "Clean rebuild, show size, flash and reset",
+                    "detail": "CAR: clean rebuild, size, then program motor_uart_pwm_nucleo.elf",
                     "icon": {
                         "id": "play"
                     }
                 }
             }
         },
+        {
+            "label": "Erase & Flash car",
+            "type": "shell",
+            "command": "openocd",
+            "args": [
+                "-f", "interface/stlink.cfg",
+                "-f", "target/stm32g4x.cfg",
+                "-c", "program build/Debug/motor_uart_pwm_nucleo.elf verify reset exit"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [],
+            "dependsOn": ["Full CHIP Erase", "Build car", "Size car"],
+            "dependsOrder": "sequence",
+            "options": {
+                "cwd": "${workspaceFolder}/car_fw",
+                "statusbar": {
+                    "hide": false,
+                    "color": "#d8e613",
+                    "detail": "CAR: full chip erase, build, then program motor_uart_pwm_nucleo.elf",
+                    "icon": {
+                        "id": "gear"
+                    }
+                }
+            }
+        },
+        {
+            "label": "CubeMX car",
+            "type": "shell",
+            "command": "stm32cubemx",
+            "args": ["./motor_uart_pwm_nucleo.ioc"],
+            "group": "build",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/car_fw",
+                "statusbar": {
+                    "hide": true,
+                    "color": "#13e6e6",
+                    "filePattern": "",
+                    "icon": {
+                        "id": "gear"
+                    }
+                }
+            }
+        },
+
+        /* ---------------------------------------------------------------- *
+         * monitor  --  max17320_gui/  ->  max17320_gui.elf
+         * ---------------------------------------------------------------- */
+        {
+            "label": "Build monitor",
+            "type": "shell",
+            "command": "cmake --preset Debug && cmake --build --preset Debug",
+            "problemMatcher": "$gcc",
+            "group": "build",
+            "options": {
+                "cwd": "${workspaceFolder}/max17320_gui",
+                "statusbar": {
+                    "hide": false,
+                    "color": "#22d63a",
+                    "detail": "max17320_gui -> max17320_gui.elf (bench monitor, no motor)"
+                }
+            }
+        },
+        {
+            "label": "Clean monitor",
+            "type": "shell",
+            "command": "cmake --build --preset Debug --target clean",
+            "problemMatcher": [],
+            "group": "build",
+            "options": {
+                "cwd": "${workspaceFolder}/max17320_gui",
+                "statusbar": {
+                    "hide": true,
+                    "color": "#e91f11"
+                }
+            }
+        },
+        {
+            "label": "Clean & Rebuild monitor",
+            "type": "shell",
+            "command": "cmake --preset Debug && cmake --build --preset Debug --clean-first",
+            "problemMatcher": "$gcc",
+            "group": "build",
+            "options": {
+                "cwd": "${workspaceFolder}/max17320_gui",
+                "statusbar": {
+                    "hide": true,
+                    "color": "#e9e507"
+                }
+            }
+        },
+        {
+            "label": "Size monitor",
+            "type": "shell",
+            "command": "arm-none-eabi-size",
+            "args": ["./build/Debug/max17320_gui.elf"],
+            "group": "build",
+            "dependsOn": ["Build monitor"],
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/max17320_gui",
+                "statusbar": {
+                    "hide": true,
+                    "color": "#0cec2a",
+                    "filePattern": ""
+                }
+            }
+        },
+        {
+            "label": "Flash monitor",
+            "type": "shell",
+            "command": "openocd",
+            "args": [
+                "-f", "interface/stlink.cfg",
+                "-f", "target/stm32g4x.cfg",
+                "-c", "program build/Debug/max17320_gui.elf verify reset exit"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [],
+            "dependsOn": ["Clean & Rebuild monitor", "Size monitor"],
+            "dependsOrder": "sequence",
+            "options": {
+                "cwd": "${workspaceFolder}/max17320_gui",
+                "statusbar": {
+                    "hide": false,
+                    "color": "#13e6e6",
+                    "detail": "MONITOR: clean rebuild, size, then program max17320_gui.elf (bench board only)",
+                    "icon": {
+                        "id": "play"
+                    }
+                }
+            }
+        },
+        {
+            "label": "Erase & Flash monitor",
+            "type": "shell",
+            "command": "openocd",
+            "args": [
+                "-f", "interface/stlink.cfg",
+                "-f", "target/stm32g4x.cfg",
+                "-c", "program build/Debug/max17320_gui.elf verify reset exit"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [],
+            "dependsOn": ["Full CHIP Erase", "Build monitor", "Size monitor"],
+            "dependsOrder": "sequence",
+            "options": {
+                "cwd": "${workspaceFolder}/max17320_gui",
+                "statusbar": {
+                    "hide": true,
+                    "color": "#d8e613",
+                    "detail": "MONITOR: full chip erase, build, then program max17320_gui.elf",
+                    "icon": {
+                        "id": "gear"
+                    }
+                }
+            }
+        },
+        {
+            "label": "CubeMX monitor",
+            "type": "shell",
+            "command": "stm32cubemx",
+            "args": ["./max17320_gui.ioc"],
+            "group": "build",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/max17320_gui",
+                "statusbar": {
+                    "hide": true,
+                    "color": "#13e6e6",
+                    "filePattern": "",
+                    "icon": {
+                        "id": "gear"
+                    }
+                }
+            }
+        },
+
+        /* ---------------------------------------------------------------- *
+         * board-level and host tasks -- no firmware image involved
+         * ---------------------------------------------------------------- */
         {
             "label": "Reset",
             "type": "shell",
@@ -174,41 +362,9 @@
                 "statusbar": {
                     "hide": false,
                     "color": "#13e6e6",
-                    "detail": "Reset the MCU",
+                    "detail": "Reset whichever MCU is attached (no programming)",
                     "icon": {
                         "id": "refresh"
-                    }
-                }
-            }
-        },
-        {
-            "label": "Erase & Flash STM32",
-            "type": "shell",
-            "command": "openocd",
-            "args": [
-                "-f", "interface/stlink.cfg",
-                "-f", "target/stm32g4x.cfg",
-                "-c", "program build/Debug/max17320_gui.elf verify reset exit"
-            ],
-            "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": true,
-                "clear": false
-            },
-            "problemMatcher": [],
-            "dependsOn": ["Full CHIP Erase", "Build", "BuildSize"],
-            "dependsOrder": "sequence",
-            "options": {
-                "statusbar": {
-                    "hide": false,
-                    "color": "#d8e613",
-                    "detail": "Erase, build, flash and reset",
-                    "icon": {
-                        "id": "gear"
                     }
                 }
             }
@@ -232,7 +388,7 @@
                 "statusbar": {
                     "hide": false,
                     "color": "#f53404",
-                    "detail": "Erase the entire chip",
+                    "detail": "Erase the entire chip on the attached board -- leaves it with NO firmware",
                     "icon": {
                         "id": "trash"
                     }
@@ -240,16 +396,23 @@
             }
         },
         {
-            "label": "Start Debug",
+            "label": "Test Decode (host)",
             "type": "shell",
-            "command": "${command:workbench.action.debug.start}",
+            "command": "gcc -std=c11 -Wall -Wextra -I. -Itest -o /tmp/test_decode test/test_decode.c max17320.c max17320_monitor.c && /tmp/test_decode",
+            "group": "test",
+            "problemMatcher": "$gcc",
+            "presentation": {
+                "reveal": "always",
+                "clear": true
+            },
             "options": {
+                "cwd": "${workspaceFolder}/fw",
                 "statusbar": {
                     "hide": false,
-                    "color": "#d67922",
-                    "detail": "Start Debug",
+                    "color": "#22d63a",
+                    "detail": "Run the register-decoding tests on the PC (no board needed)",
                     "icon": {
-                        "id": "debug-start"
+                        "id": "beaker"
                     }
                 }
             }
@@ -273,7 +436,7 @@
                 "statusbar": {
                     "hide": false,
                     "color": "#9b59b6",
-                    "detail": "Live 115200 view of the ANSI dashboard on the ST-Link VCP (auto-detects the port)",
+                    "detail": "Live 115200 view of the pack-monitor console on the ST-Link VCP (both projects use it)",
                     "icon": {
                         "id": "output"
                     }

@@ -1,0 +1,39 @@
+# Build directories
+build/
+Build/
+Debug/
+Release/
+out/
+
+# CMake and Ninja generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+.ninja_deps
+.ninja_log
+
+# Compiled files
+*.o
+*.obj
+*.d
+*.a
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+
+# Local editor files
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# STM32Cube/Eclipse generated metadata
+.settings/
+.mxproject
+
+# Codex temporary files
+.codex/last-build.log
+.codex/.build-needed

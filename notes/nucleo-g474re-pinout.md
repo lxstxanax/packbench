@@ -377,3 +377,276 @@ solder-bridge descriptions) came through reliably and are marked ✔/verbatim. T
 morpho Table 16 did not** — that is the one area where this document falls back on the standard
 Nucleo-64 layout plus cross-checks. Everything load-bearing was corroborated against at least two
 independent sources (UM2505 + stm32duino variant + Zephyr + ST-generated AF tables).
+
+---
+---
+
+# APPENDIX A (appended 2026-08-15) — External power, JP5, and the back-feed question
+
+> **Status of sources: upgraded.** Everything in this appendix comes from the **full UM2505 Rev 4
+> PDF (February 2021, 44 pages)** and the **MB1367-G474RE-C04 schematic (21-January-19, 8 sheets)**,
+> both retrieved this time via `web.archive.org` and read directly (`pdftotext -layout` for prose and
+> tables, `pdftoppm` page renders for the schematic sheets). The "SCH — **not retrieved**" line in the
+> source table at the top of this file is now **obsolete**; sheets 5, 6 and 7 were read. Section A.7
+> lists the items in the *Unverified items summary* that this closes.
+
+## A.1 Every way MB1367 can be powered
+
+UM2505 §6.4, **verbatim**:
+
+> "The power supply can be provided by five different sources:
+> • A host PC connected to CN1 through a USB cable (default setting)
+> • An external 7 V - 12 V (VIN) power supply connected to CN7 pin 24
+> • An external 5 V (E5V) power supply connected to CN7 pin 6
+> • An external 5 V USB charger (5V_USB_CHGR) connected to CN1
+> • An external 3.3 V power supply (3V3) connected to CN7 pin 16"
+
+| Source | Connector pin(s) | Voltage range | Max current | On-board 3V3 reg (U12) in path? | ST-LINK functional? | JP5 |
+|---|---|---|---|---|---|---|
+| **5V_USB_STLK** (host PC) | **CN1** | 5 V | **500 mA** (see caution below) | **Yes** | **Yes** | **[1-2] default** |
+| **VIN** | **CN6 pin 8** / **CN7 pin 24** | **7 V – 12 V** | **800 mA** @ 7 V; 450 mA @ 7–9 V; 250 mA @ 9–12 V | **Yes** (+ U11 LD1117S50 5 V LDO first) | **Yes** (via D3) | **[3-4]** |
+| **E5V** | **CN7 pin 6** only (*not* on any Arduino header) | **4.75 V – 5.25 V** | **500 mA** | **Yes** | **Yes** (via D2) | **[5-6]** |
+| **5V_USB_CHGR** (USB charger) | **CN1** | 5 V | not specified ("-") | **Yes** (bypasses power switch U4) | **No** — Fig. 13 is annotated "No debug" | **[7-8]** |
+| **3V3** | **CN6 pin 4** / **CN7 pin 16** | **3 V – 3.6 V** | **1.3 A** | **No** — back-drives U12's output directly | **NO** | **removed** (Fig. 14: "No jumper") |
+
+Ranges/currents are UM2505 Tables 6–9. Two further ST statements, **verbatim**:
+
+> "If the power supply is 3V3, the ST-LINK is not powered and cannot be used." (§6.4)
+
+> **Caution:** "If the maximum current consumption of the STM32G4 Nucleo-64 board and its shield
+> boards exceeds 300 mA, it is mandatory to power the STM32G4 Nucleo-64 board with an external power
+> supply connected to E5V, VIN or 3.3 V." (§6.4)
+
+Note the 500 mA / 300 mA discrepancy is ST's own: the USB enumeration requests 500 mA and the LD4 OC
+LED trips above 500 mA, but the Caution sets the practical ceiling at 300 mA.
+
+**The `5V` pin is documented as an OUTPUT, not an input.** UM2505 Table 15, CN6 pin 5, verbatim
+Function column: **"5 V output"**. It is not listed as a power *source* anywhere in §6.4, and in the
+Figure 9 power tree the `5V` and `3V3` arrows point *out* to the header block while `E5V`, `VIN` and
+`VBAT` point *in*. Also §6.6.1: *"LD3 PWR — The green LED indicates that the STM32G4 part is powered
+and +5 V power is available on CN6 pin 5 and CN7 pin 18."*
+
+## A.2 The power-selection jumper is **JP5**, labelled "5V_SEL"
+
+UM2505 Table 4 "Jumper configuration", **verbatim** (defaults bold per ST's footnote 1):
+
+| Jumper | Definition | Position | Comment |
+|---|---|---|---|
+| JP1 | NRST | OFF | STLINK-V3E reset |
+| JP3 | T_RST | ON | - |
+| **JP5** | **5 V power-source selection** | **ON [1-2] (Default)** | **5V_USB_STLK (from ST-LINK)** |
+| | | ON [3-4] (optional) | 5V_VIN |
+| | | ON [5-6] (optional) | E5V |
+| | | ON [7-8] (optional) | 5V_USB_CHGR |
+| JP6 | IDD | ON | - |
+| JP7 | BOOT0 | OFF | - |
+| JP8 | VREF+ selection | ON [1-2] (Default) / ON [2-3] (optional) | VREF+ supplied with VREF / with VDD |
+
+**Factory default = JP5 shunt on [1-2] = powered from the ST-LINK USB.** Schematic sheet 6 prints
+"Shunt Fitted 1-2" next to JP5. JP5 is a **4×2 header** (8 pins), not the 2-pin U5V/E5V header of the
+older MB1136 — do not carry MB1136 habits over. The spare-shunt parking post next to it is **HW5**.
+
+> **⚠ UM2505 Rev 4 typo — flagged.** The VIN paragraph says *"jumper **JP2** on pins 3-4 '5V_VIN'"*
+> and the charger paragraph says *"jumper **JP2** on pins 7-8 '5V_CHGR'"*. **This is wrong; it means
+> JP5.** Table 4, §6.4.1 (*"Connect jumper JP5 between pins 5 & 6 for E5V or between pins 3 & 4 for
+> VIN"*) and the schematic all say JP5 — and **there is no JP2 (or JP4) on MB1367 at all**; the only
+> jumpers on the C-04 schematic are JP1, JP3, JP5, JP6, JP7, JP8.
+
+## A.3 The real topology (MB1367-C-04 sheets 6 and 7) — this is what answers everything
+
+```
+                                   ┌──── D1 BAT60J ────┐
+CN1 VBUS ── net 5V_USB_CHGR ───────┤                   │
+   │            (also on CN10 p8)  │                   │
+   │                               │                   ├──> U7 LD3985M33R ──> 3V3_STLK
+   └─> U4 STMPS2151STR  IN         │                   │     (ST-LINK's OWN 150 mA
+       EN <- T_PWR_EN (R8 10k pd)  │                   │      supply -> STM32F723)
+       OUT = net 5V_USB_STLK ──> JP5 pin 1             │
+                                   │                   │
+CN7 p6  ── net E5V ────────┬───> JP5 pin 5             │
+                           └──── D2 BAT60J ────────────┤
+                                                       │
+CN6 p8 /  ── VIN ─> U11 LD1117S50TR ─> net 5V_VIN ─┬─> JP5 pin 3
+CN7 p24     (linear!)                              └── D3 BAT60J ──┘
+
+JP5 pins 2,4,6,8 are ALL commoned  ==  net "5V"
+                                        ├──> CN6 pin 5  and  CN7 pin 18   (the "5V" pin)
+                                        ├──> R7 510R + LD3 green (5V_PWR)
+                                        ├──> R12 2K7 / R11 4K7 divider -> T_PWR_EXT (PB1 of ST-LINK)
+                                        └──> U12 LD39050PU33R ──> 3V3 ──SB5──> JP6(IDD) ──> VDD ──> MCU
+```
+
+Four consequences, all schematic-verified, none of them obvious from the text:
+
+1. **The ST-LINK has its own supply, diode-OR'd from three sources** (D1/D2/D3, BAT60JFILM Schottkys,
+   anodes at `5V_USB_CHGR` / `E5V` / `5V_VIN`, cathodes commoned into U7 LD3985M33R). The diodes make
+   these three mutually non-back-feeding. **The `5V` net is NOT one of the OR'd inputs.**
+2. Therefore **feeding the `5V` pin does not power the ST-LINK**, and feeding **E5V does** — even with
+   JP5 pointed elsewhere.
+3. **Between the four sources and the `5V` net there is nothing but the JP5 shunt** — no diode, no
+   ideal-diode MOSFET, no fuse, no series resistor. The `5V` pin is hard-wired to whichever source
+   JP5 selects.
+4. **VIN goes through a *linear* regulator (U11 LD1117S50TR)**, which is why the VIN current budget
+   collapses from 800 mA to 250 mA as VIN rises — it is thermal, not a current limit. Sheet 5 carries
+   ST's own note: **"WARNING voltage applied to VIN <12V"**.
+
+Doc nit: Figure 9 calls the ST-LINK LDO **U17**; the C-04 schematic calls it **U7**. Same part
+(LD3985M33R).
+
+## A.4 Is there a config that works with AND without USB, with no jumper change?
+
+**Yes — exactly one: E5V on CN7 pin 6 with JP5 on [5-6].** (One permanent move off the factory
+default; after that the shunt never moves again.)
+
+| Option | Works without USB? | Plug USB in while externally powered? | Jumper must move? |
+|---|---|---|---|
+| **E5V, CN7 pin 6, JP5 [5-6]** | ✅ **Yes** — 5 V rail *and* ST-LINK both fed from E5V | ✅ **Safe.** JP5 pin 1 is left open, so U4's output goes nowhere even if the ST-LINK turns it on. USB VBUS reaches only D1, which the OR-diodes isolate. **No contention path exists.** | Once, [1-2]→[5-6], then never again |
+| VIN 7–12 V, JP5 [3-4] | ✅ Yes | ✅ Safe — same reason (JP5 pin 1 open) | Once, [1-2]→[3-4] |
+| **VIN fed with 5 V** | ❌ **No — do not.** U11 LD1117S50 needs ~1.1 V dropout, so 5 V in gives ≈3.9 V on the `5V` rail and ≈3.5 V into the ST-LINK's LDO. Out of spec (ST says 7–12 V) and marginal. | — | — |
+| **5 V into the `5V` pin, JP5 [1-2]** | ✅ runs, but **no debug** (ST-LINK unpowered — see A.3.2) | 🚫 **NOT safe — this is the fault case.** See A.5. | — |
+| 3V3, CN6 p4 / CN7 p16, JP5 removed | ✅ Yes | ❌ **No debug ever** — "the ST-LINK is not powered and cannot be used" | Shunt must be **removed** |
+| Factory default JP5 [1-2] | ❌ No — board is dead without USB | — | — |
+
+**There is no configuration that runs without USB while JP5 stays at the factory [1-2] position.**
+With JP5 on [5-6], the converse is also true and is a *feature*: USB alone will not power the target
+(only the ST-LINK), so the board's power state is unambiguous.
+
+## A.5 Back-feed: what happens if 5 V is applied to the `5V` pin with USB connected
+
+**UM2505 says nothing about this case** — the `5V` pin is documented "5 V output" only. The schematic
+and the U4 datasheet are the authority. Answer to "diode, ideal-diode MOSFET, or nothing?":
+
+- Between the four sources and the `5V` net: **nothing but the JP5 shunt.**
+- Between USB VBUS and `5V_USB_STLK`: **U4, an STMPS2151STR** — an **N-channel** high-side switch
+  (not a P-channel, so no naive OUT→IN body diode) with **specified reverse-current blocking**.
+
+STMPS2151 datasheet (ST DS5410 Rev 7), §3.4 "Reversed current blocking", **verbatim**:
+
+> "When the switch is OFF (disabled through the EN pin), or when the STMPS device is unpowered
+> (VIN = 0 V) the switch behaves as an Hi-Z at the output pin, ensuring that no reverse current will
+> flow into the device when VIN < VOUT."
+
+> "**Note:** In the case where the switch is ON, and a voltage higher than VIN is applied to the OUT
+> pin, a reverse current occurs. **This operating condition is not allowed.**"
+
+Reverse leakage when OFF is **≤ 2 µA** (Table 12). Absolute maximum (Table 7): **VOUT ≤ VIN + 0.3 V**.
+R_ON at 5 V: **typ 90 mΩ, max 110 mΩ**. Forward current limit I_OS: **0.60 / 0.80 / 1.00 A**
+min/typ/max, rated 500 mA. FAULT is blanked ~4–15 ms and drives LD4.
+
+So the behaviour splits cleanly in two:
+
+- **U4 OFF** (before enumeration, or if firmware holds it off): Hi-Z, ≤2 µA. **No back-feed to the PC.**
+- **U4 ON** (after a successful enumeration asserts T_PWR_EN): the buck's 5 V and the PC's VBUS are
+  **hard-paralleled through ~90 mΩ**. Reverse current is limited only by that 90 mΩ plus the USB cable
+  and connector resistance — **the 0.6–1.0 A current limit protects the forward direction only**, and
+  the reverse current is not an overcurrent event, so **LD4 stays dark**. ST's own words: *"not
+  allowed."*
+
+**Can it produce hundreds of mA? Yes, easily — the arithmetic lands right on ~600 mA.** A 5.00 V buck
+against a PC VBUS that sits at 4.75–4.95 V at the far end of a micro-B cable gives 50–250 mV of
+mismatch; across 90 mΩ plus ~0.2–0.4 Ω of cable/connector that is **roughly 150 mA to >1 A of
+circulating current that does no work**. To get exactly 600 mA you need only ~54 mV of mismatch across
+the FET alone, or ~230 mV across FET+cable. A healthy NUCLEO-G474RE (MCU at 170 MHz + STLINK-V3E +
+LEDs) should be roughly **100–150 mA**, so ~450–500 mA of unexplained draw is exactly this signature.
+
+**Damage risk:** the condition violates U4's absolute maximum (VOUT ≤ VIN + 0.3 V) whenever the buck
+exceeds VBUS by >0.3 V, and it back-powers the host PC's USB port. Whether that has already damaged
+anything here is **UNCONFIRMED**, but it is a credible mechanism.
+
+> **⚠ UNCONFIRMED — the one gap.** Sheet 7 shows the ST-LINK sensing the `5V` net through an
+> **R12 2K7 / R11 4K7 divider into T_PWR_EXT (PB1 of the STM32F723)** — evidently so the firmware can
+> detect that external 5 V is already present. **Whether STLINK-V3E firmware then withholds T_PWR_EN
+> and keeps U4 OFF is undocumented in UM2505 and unverified.** If it does, the back-feed never starts
+> and the excess current has some other cause. This is precisely why the measurement in A.6 is worth
+> doing before concluding.
+
+### A.5.1 Decisive, non-destructive test
+
+The raw USB VBUS net is brought out to a documented morpho pin: **CN10 pin 8 = `5V_USB_CHGR`**
+(UM2505 Table 16, with footnote 4: *"5V_USB_CHGR is the 5 V power from the STLINK-V3E USB connector
+that rises first. It rises before the 5 V rising on the board."*). So, with the buck live and USB
+plugged in, measure DC between **CN10 pin 8** and **CN6 pin 5**:
+
+- **Difference of hundreds of mV, stable** → U4 is OFF, the rails are isolated, **back-feed refuted**;
+  look elsewhere for the 600 mA.
+- **Difference of only a few tens of mV** → U4 is ON and the rails are tied. **Back-feed confirmed**,
+  and you can read the current straight off the meter: **I_reverse ≈ ΔV / 0.09 Ω** (54 mV ⇒ 600 mA).
+
+Cross-check: unplug USB and re-measure the buck's output current. A drop of ~450–500 mA to a sane
+~100–150 mA confirms it outright.
+
+## A.6 Recommended wiring
+
+**Do this:**
+
+| What | Where |
+|---|---|
+| Buck **+5 V** (trim to **4.9–5.1 V**; spec is 4.75–5.25 V) | **CN7 pin 6 = E5V** |
+| Buck **GND** | **CN7 pin 8** (or CN6 pin 6 / CN6 pin 7 / CN5 pin 7) |
+| **JP5 shunt** | move **[1-2] → [5-6]**, once, permanently. Park the spare on HW5. |
+| Budget | **≤ 500 mA** on E5V |
+
+Then plug and unplug the ST-LINK USB freely — the board's behaviour is identical either way, and
+there is no path by which your buck can push current into the PC. Green **LD3** ON is the confirmation
+that the `5V` rail is live. ST's own procedure (§6.4.1), **verbatim**:
+
+> "When powered by VIN or E5V, it is still possible to use the ST-LINK for programming or debugging
+> only, but it is mandatory to power the board first using VIN or EXT, then to connect the USB cable
+> to the PC. In this way the enumeration succeeds, thanks to the external power source.
+> The following power-sequence procedure must be respected:
+> 1. Connect jumper JP5 between pins 5 & 6 for E5V or between pins 3 & 4 for VIN
+> 2. Connect the external power source to VIN or E5V
+> 3. Power on the external power supply 7V < VIN < 12 V for VIN, or 5V for E5V
+> 4. Check that the green LED LD3 is turned ON
+> 5. Connect the PC to the USB connector CN1
+> If this order is not respected, the board may be powered by USB first, then by VIN or E5V as the
+> following risks may be encountered:
+> 1. If more than 300 mA current is needed by the board, the PC may be damaged or the current supplied
+>    can be limited by the PC. As a consequence, the board is not powered correctly.
+> 2. 300 mA is requested at enumeration so there is risk that the request is rejected and the
+>    enumeration does not succeed if the PC cannot provide such current. Consequently, the board is
+>    not power supplied (LED LD3 remains OFF)."
+
+With JP5 on [5-6] the ordering in that procedure stops mattering much, because the ST-LINK draws its
+own 3V3 from E5V through D2 regardless of USB — but following it costs nothing.
+
+### A.6.1 Optional: make USB-only operation work too, without touching the jumper
+
+If you also want the board to run from USB alone when the pack is disconnected, **fit a Schottky
+(BAT60J, SS14, 1N5819 — anything ≥200 mA, low Vf) with its ANODE on JP5 pin 1 and its CATHODE on
+JP5 pin 2, keeping the [5-6] shunt in place.** JP5 pin 1 is `5V_USB_STLK` (U4's output) and pin 2 is
+already the `5V` net, so this ORs the USB in behind a blocking diode:
+
+- Pack present → E5V (5.0 V) holds the rail; the diode is reverse-biased; **no reverse current into
+  U4 or the PC**, which is exactly the condition its datasheet forbids.
+- Pack absent, USB present → rail sits at VBUS − ~0.35 V ≈ 4.65 V, comfortably above U12's dropout.
+
+This needs **no board rework** — build it as a two-pin plug that seats on JP5 pins 1-2. It is my
+recommendation derived from the schematic; **ST does not document this configuration**, so treat it
+as an engineering addition rather than an ST-sanctioned one, and keep the total under 500 mA.
+
+### A.6.2 Do NOT do these
+
+- ❌ **5 V to the `5V` pin (CN6 p5 / CN7 p18) with USB connected** — the fault case of A.5.
+- ❌ **5 V to VIN** — LD1117S50 dropout leaves ~3.9 V; ST specifies 7–12 V.
+- ❌ **Pack 8.3 V to the `5V` pin** — sheet 6 shows it landing directly on U12's input with nothing in
+  series, and (via a switched-on U4) on the PC's VBUS. *(U12 LD39050's exact absolute maximum was not
+  checked in this pass — **UNCONFIRMED** — but 8.3 V on a 3.3 V LDO's input is out of spec regardless.)*
+- ❌ **Anything to the `3V3` pin** unless you also pull the JP5 shunt and accept losing the debugger.
+
+## A.7 Items this appendix closes from the *Unverified items summary*
+
+| # | Was | Now |
+|---|---|---|
+| 6 | ST morpho **GND** pin list — UNCONFIRMED | **RESOLVED.** UM2505 Table 16 read directly: **CN7 GND = pins 8, 19, 20, 22**; **CN10 GND = pins 9, 20**; **CN10 pin 32 = AGND**. Note **CN7 pin 19 is also GND** (an odd pin — the earlier standard-layout guess had only 8/20/22). Power: **CN7 p5 VDD, p6 E5V, p12 IOREF, p14 NRST, p16 3V3, p18 5V, p24 VIN, p33 VBAT** — all as previously assumed. **CN10 pin 8 = 5V_USB_CHGR** (raw USB VBUS, was not in the earlier table at all). |
+| 6b | Whether **CN10 35/37** carry PA2/PA3 or the ARD_D1/D0 nets — UNCONFIRMED | **RESOLVED: they carry the ARD_D1_TX / ARD_D0_RX nets**, i.e. **USART1 PC4/PC5 by default**, not PA2/PA3. Sheet 5 wires CN10 p35/p37 to the same nets as CN9 p2/p1 and annotates *"Default: USART1 from PC4/PC5 — Optional: LPUART1 from PA2/PA3"*; Table 16 lists them as "PA2 / PC4" and "PA3 / PC5" with the default in bold. **CN10 pins 36 and 38 are not connected.** The §4 caveat in this file was right to warn. |
+| — | SCH "not retrieved" | **RESOLVED** — MB1367-G474RE-C04 read (sheets 5, 6, 7). |
+
+Sheet 5 also settles, incidentally: **SB33 gates PC4 to CN10 pin 34**, and **SB34/SB37 are DNF**
+(marked "Close only for I2C on A4/A5"), which supports item 7's guess that A4/A5 default to PC1/PC0.
+
+### Appendix method note
+
+`curl` from `web.archive.org` → `pdftotext -layout` (prose + tables) and `pdftoppm -r 150/400 -png`
+(schematic sheets read as images). STMPS2151STR data from ST DS5410 Rev 7 (15 Feb 2022) via the
+`r.jina.ai` proxy. Everything marked verbatim is quoted from those PDFs.

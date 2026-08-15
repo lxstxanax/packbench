@@ -1,0 +1,315 @@
+{
+    "version": "2.0.0",
+
+    // Car-only tasks. This folder builds exactly one image --
+    // build/Debug/motor_uart_pwm_nucleo.elf -- and the labels still say "car"
+    // so they read the same here as in the workspace-root tasks
+    // (../.vscode/tasks.json), where the bench monitor's tasks live alongside.
+    //
+    // The previous file (tasks.json.backup, kept for reference) used
+    // "type": "cmake" tasks plus `find ./build -name '*.elf' | head -n 1`,
+    // which programs whatever .elf turns up first. Every task below names the
+    // .elf explicitly instead.
+
+    "tasks": [
+        {
+            "label": "Build car",
+            "type": "shell",
+            "command": "cmake --preset Debug && cmake --build --preset Debug",
+            "problemMatcher": "$gcc",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "statusbar": {
+                    "hide": false,
+                    "color": "#22d63a",
+                    "detail": "car_fw -> motor_uart_pwm_nucleo.elf"
+                }
+            }
+        },
+        {
+            "label": "Clean car",
+            "type": "shell",
+            "command": "cmake --build --preset Debug --target clean",
+            "problemMatcher": [],
+            "group": "build",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "statusbar": {
+                    "hide": true,
+                    "color": "#e91f11"
+                }
+            }
+        },
+        {
+            "label": "Clean & Rebuild car",
+            "type": "shell",
+            "command": "cmake --preset Debug && cmake --build --preset Debug --clean-first",
+            "problemMatcher": "$gcc",
+            "group": "build",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "statusbar": {
+                    "hide": false,
+                    "color": "#e9e507",
+                    "detail": "Full rebuild (re-emits the steering-calibration #warning)"
+                }
+            }
+        },
+        {
+            "label": "Size car",
+            "type": "shell",
+            "command": "arm-none-eabi-size",
+            "args": ["./build/Debug/motor_uart_pwm_nucleo.elf"],
+            "group": "build",
+            "dependsOn": ["Build car"],
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "statusbar": {
+                    "hide": true,
+                    "color": "#0cec2a",
+                    "filePattern": ""
+                }
+            }
+        },
+        {
+            "label": "Flash car",
+            "type": "shell",
+            "command": "openocd",
+            "args": [
+                "-f", "interface/stlink.cfg",
+                "-f", "target/stm32g4x.cfg",
+                "-c", "program build/Debug/motor_uart_pwm_nucleo.elf verify reset exit"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [],
+            "dependsOn": ["Clean & Rebuild car", "Size car"],
+            "dependsOrder": "sequence",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "statusbar": {
+                    "hide": false,
+                    "color": "#13e6e6",
+                    "detail": "CAR: clean rebuild, size, then program motor_uart_pwm_nucleo.elf",
+                    "icon": {
+                        "id": "play"
+                    }
+                }
+            }
+        },
+        {
+            "label": "Erase & Flash car",
+            "type": "shell",
+            "command": "openocd",
+            "args": [
+                "-f", "interface/stlink.cfg",
+                "-f", "target/stm32g4x.cfg",
+                "-c", "program build/Debug/motor_uart_pwm_nucleo.elf verify reset exit"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [],
+            "dependsOn": ["Full CHIP Erase", "Build car", "Size car"],
+            "dependsOrder": "sequence",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "statusbar": {
+                    "hide": false,
+                    "color": "#d8e613",
+                    "detail": "CAR: full chip erase, build, then program motor_uart_pwm_nucleo.elf",
+                    "icon": {
+                        "id": "gear"
+                    }
+                }
+            }
+        },
+        {
+            "label": "CubeMX car",
+            "type": "shell",
+            "command": "stm32cubemx",
+            "args": ["./motor_uart_pwm_nucleo.ioc"],
+            "group": "build",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "statusbar": {
+                    "hide": true,
+                    "color": "#13e6e6",
+                    "filePattern": "",
+                    "icon": {
+                        "id": "gear"
+                    }
+                }
+            }
+        },
+        {
+            "label": "Reset",
+            "type": "shell",
+            "command": "openocd",
+            "args": [
+                "-f", "interface/stlink.cfg",
+                "-f", "target/stm32g4x.cfg",
+                "-c", "init; reset run; exit"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [],
+            "options": {
+                "statusbar": {
+                    "hide": false,
+                    "color": "#13e6e6",
+                    "detail": "Reset the attached MCU (no programming)",
+                    "icon": {
+                        "id": "refresh"
+                    }
+                }
+            }
+        },
+        {
+            "label": "Full CHIP Erase",
+            "type": "shell",
+            "command": "st-flash",
+            "args": ["erase"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [],
+            "options": {
+                "statusbar": {
+                    "hide": false,
+                    "color": "#f53404",
+                    "detail": "Erase the entire chip on the attached board -- leaves it with NO firmware",
+                    "icon": {
+                        "id": "trash"
+                    }
+                }
+            }
+        },
+        {
+            "label": "Test Decode (host)",
+            "type": "shell",
+            "command": "gcc -std=c11 -Wall -Wextra -I. -Itest -o /tmp/test_decode test/test_decode.c max17320.c max17320_monitor.c && /tmp/test_decode",
+            "group": "test",
+            "problemMatcher": "$gcc",
+            "presentation": {
+                "reveal": "always",
+                "clear": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/../fw",
+                "statusbar": {
+                    "hide": false,
+                    "color": "#22d63a",
+                    "detail": "Run the register-decoding tests on the PC (no board needed)",
+                    "icon": {
+                        "id": "beaker"
+                    }
+                }
+            }
+        },
+        {
+            "label": "Serial Monitor (ST-Link VCP)",
+            "type": "shell",
+            "command": "bash",
+            "args": ["${workspaceFolder}/../tools/serial_monitor.sh"],
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated",
+                "showReuseMessage": true,
+                "clear": true
+            },
+            "options": {
+                "statusbar": {
+                    "hide": false,
+                    "color": "#9b59b6",
+                    "detail": "Live 115200 view of the pack-monitor console on the ST-Link VCP",
+                    "icon": {
+                        "id": "output"
+                    }
+                }
+            }
+        },
+        {
+            "label": "BMS Dashboard",
+            "type": "shell",
+            "command": "${workspaceFolder}/../tools/bms_dashboard/run.sh",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "dedicated",
+                "showReuseMessage": true,
+                "clear": true
+            },
+            "options": {
+                "statusbar": {
+                    "hide": false,
+                    "color": "#f39c12",
+                    "detail": "Open the live BMS dashboard (close the Serial Monitor first - the port is exclusive)",
+                    "icon": {
+                        "id": "pulse"
+                    }
+                }
+            }
+        },
+        {
+            "label": "Post Debug Task",
+            "type": "shell",
+            "command": "echo 'Debug session ended.'",
+            "problemMatcher": [],
+            "presentation": {
+                "clear": true
+            },
+            "options": {
+                "statusbar": {
+                    "hide": true
+                }
+            }
+        }
+    ]
+}

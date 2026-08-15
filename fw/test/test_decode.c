@@ -55,6 +55,10 @@ static int failures = 0;
 static uint8_t last_slave7;
 static uint8_t last_reg;
 
+/* Flipped by the interlock test below to make the part report its
+ * discharge FET open, the way the protector leaves it after a trip. */
+static bool fets_open;
+
 /* Raw register values, picked so every decoded result below is exact. */
 static uint16_t fake_reg(uint8_t slave7, uint8_t reg)
 {
@@ -70,7 +74,7 @@ static uint16_t fake_reg(uint8_t slave7, uint8_t reg)
     case 0x00: return 0x0002;   /* Status: POR set */
     case 0xD9: return 0x2000;   /* ProtStatus: Full only -> not a fault */
     case 0xAF: return 0x0800;   /* ProtAlrt: OVP in the sticky history */
-    case 0xF1: return 0x0003;   /* HProtCfg2: CHGs + DISs both on */
+    case 0xF1: return fets_open ? 0x0000 : 0x0003;  /* HProtCfg2 D1:D0 */
     case 0xB0: return 0x0000;
     case 0x3D: return 0x0000;
     case 0x61: return 0x00F9;   /* CommStat: normal locked value */
@@ -198,6 +202,36 @@ int main(void)
     CHECK_TRUE("ttf valid", snap.ttf_valid);
     CHECK_EQ("ttf seconds", snap.ttf_s, 5040);
     CHECK_FALSE("tte valid (saturated)", snap.tte_valid);
+
+    /*
+     * The interlock depends on the FET and fault state reaching the
+     * snapshot part way into a pass, not at the end of one: a host reading
+     * bms_app_pack_state() must not have to wait for ~34 reads of
+     * voltages and capacities to learn that the pack cut the path.
+     */
+    printf("\nearly publish of the safety registers:\n");
+    {
+        uint32_t seq_before        = snap.seq;
+        uint32_t safety_seq_before = snap.safety_seq;
+        int32_t  cell1_before      = snap.cell1_01mv;
+
+        fets_open = true;           /* protector opens the discharge FET */
+
+        /* One short slice, exactly what a real-time host calls per loop:
+         * enough to cover Status, ProtStatus, ProtAlrt and HProtCfg2. */
+        CHECK_FALSE("pass still in progress",
+                    max17320_monitor_poll_step(&mon, &snap, 4));
+        CHECK_TRUE("safety fields republished", snap.safety_seq > safety_seq_before);
+        CHECK_EQ("completed-pass counter unchanged", snap.seq, seq_before);
+        CHECK_FALSE("dis fet seen open mid-pass", snap.dis_fet_on);
+        CHECK_FALSE("chg fet seen open mid-pass", snap.chg_fet_on);
+        /* ...and the measured half of the snapshot is untouched until the
+         * pass that is reading it finishes. */
+        CHECK_EQ("cell1 not half-updated", snap.cell1_01mv, cell1_before);
+
+        fets_open = false;
+        mon.poll_idx = 0;
+    }
 
     printf("\nbit names:\n");
     CHECK_TRUE("D13 == Full",

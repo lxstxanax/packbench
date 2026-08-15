@@ -1,5 +1,6 @@
 #include "bms_dashboard.h"
 #include "bms_io.h"
+#include "bms_pins.h"   /* the only place a bus pin may be named from */
 
 /* ANSI: home the cursor and erase each line as it is rewritten, rather
  * than clearing the whole screen every frame -- a full clear makes the
@@ -19,6 +20,14 @@
 #define C_CYN  "\x1b[36m"
 
 #define RULE "--------------------------------------------------------------------------"
+
+/* Footer hint. 'w' (and the rest of the bench-only keys) do not exist in a
+ * real-time build, so that build must not advertise them. */
+#ifdef BMS_REALTIME_HOST
+#define KEY_HINT "keys: [d]ash [j]son [r]aw [n]vcfg [x]reg [b]us [c]lear [p]robe [h]elp"
+#else
+#define KEY_HINT "keys: [d]ash [j]son [r]aw [n]vcfg [x]reg [b]us [w]life [c]lear [p]robe [h]elp"
+#endif
 
 static const char *flow_text(max17320_flow_t f)
 {
@@ -124,8 +133,8 @@ void bms_dashboard_render(const max17320_snapshot_t *s, const max17320_monitor_t
     if (!mon->provisioned) {
         bms_printf("%s  !! GAUGE NOT PROVISIONED (nDesignCap = 0): capacity, SOC, "
                    "TTE/TTF and Age are meaningless.%s%s", C_RED, C_RST, ANSI_EOL);
-        bms_printf("%s     Press ! then 2 to load the pack profile into RAM "
-                   "(free, reversible).%s%s", C_RED, C_RST, ANSI_EOL);
+        bms_printf("%s     Load the pack profile (" BMS_PROVISION_HINT
+                   ") before believing any of it.%s%s", C_RED, C_RST, ANSI_EOL);
     }
     if (!s->cells_plausible) {
         bms_printf("%s  !! CELL WIRING: a cell channel reads exactly 0 V. In 2S, "
@@ -289,8 +298,7 @@ void bms_dashboard_render(const max17320_snapshot_t *s, const max17320_monitor_t
     }
 
     bms_printf(C_DIM RULE C_RST "%s", ANSI_EOL);
-    bms_printf(C_DIM " seq %lu  poll_err %lu  age %lu ms   "
-               "keys: [d]ash [j]son [r]aw [n]vcfg [b]us [w]life [c]lear [p]robe [h]elp" C_RST "%s",
+    bms_printf(C_DIM " seq %lu  poll_err %lu  age %lu ms   " KEY_HINT C_RST "%s",
                (unsigned long)s->seq, (unsigned long)mon->fail_count,
                (unsigned long)age_ms, ANSI_EOL);
 }
@@ -391,43 +399,73 @@ void bms_dashboard_raw_dump(const max17320_snapshot_t *s)
     bms_print("-----------------------------------------------\r\n");
 }
 
+/* Only the keys this build actually has. A help screen that lists a key
+ * the switch statement does not handle is a bug report waiting to happen,
+ * and the closing paragraph is a safety claim that has to stay true for
+ * the build it is printed by. */
 void bms_dashboard_help(void)
 {
     bms_print("\r\n-- keys ---------------------------------------\r\n"
               "  d   ANSI dashboard (default)\r\n"
               "  j   stream one JSON object per sample\r\n"
               "  r   dump raw status registers once\r\n"
+              "  n   read the NV profile back and diff it\r\n"
+              "  x   read one register: x then three hex digits\r\n"
               "  b   bus check: read SCL/SDA idle levels to tell a missing\r\n"
               "      pull-up apart from an unpowered gauge\r\n"
+#ifndef BMS_REALTIME_HOST
               "  w   life check: run the bus at ~20 kHz off the MCU's own\r\n"
               "      internal pull-ups and see if the gauge ACKs at all\r\n"
+              "  t   trip capture: poll the fault and FET bits flat out\r\n"
+              "  !   provisioning menu (the only path that writes NVM)\r\n"
+#endif
               "  c   clear sticky protection alerts (asks Y/n)\r\n"
               "  p   re-probe the gauge and re-read boot config\r\n"
               "  h   this help\r\n"
               "-----------------------------------------------\r\n"
+#ifdef BMS_REALTIME_HOST
               "This build is read-only apart from 'c'. It never writes\r\n"
               "NVM, never touches Command/CommStat, and cannot consume\r\n"
-              "one of the part's 7 lifetime NVM writes.\r\n\r\n");
+              "one of the part's 7 lifetime NVM writes.\r\n"
+              "n, x, c, b and p do their I2C synchronously, so they are\r\n"
+              "refused while the host says stalling the loop is unsafe\r\n"
+              "(on the car: while the drive is live).\r\n\r\n"
+#else
+              "Everything is read-only except 'c' and the '!' menu. Inside\r\n"
+              "'!', only option 4 spends one of the part's 7 lifetime NVM\r\n"
+              "writes, and it asks before it does.\r\n\r\n"
+#endif
+              );
 }
 
 void bms_dashboard_banner(const max17320_snapshot_t *s, max17320_status_t probe_result)
 {
     bms_print(ANSI_CLS);
-    bms_print(C_BLD "MAX17320 BMS monitor" C_RST
-              "  --  STM32G474RE, I2C1, read-only\r\n");
+    /* No peripheral number here: the two builds are not on the same I2C
+     * instance, and this banner has no way to know which handle it was
+     * given. The pin names it can state, because they come from the same
+     * defines the bus check drives. */
+    bms_print(C_BLD "MAX17320 BMS monitor" C_RST "  --  STM32G474RE, SCL "
+              BMS_SCL_NAME ", SDA " BMS_SDA_NAME "\r\n");
 
     if (probe_result == MAX17320_OK) {
         bms_printf("probe: OK  (0x36 and 0x0B both answer)  DevName 0x%04X\r\n",
                    (s != NULL) ? s->dev_name : 0u);
     } else {
         bms_printf(C_RED "probe: %s" C_RST "\r\n", max17320_status_str(probe_result));
+        /* The pin names come from bms_pins.h, which is also what the bus
+         * check drives -- the two builds are not on the same pins, and a
+         * banner that named the wrong ones would send someone rewiring a
+         * working link. */
         bms_print("  check, in this order:\r\n"
                   "   1. pack connected? the gauge is powered from BATTP, it is\r\n"
                   "      dead without cells and looks exactly like a bus fault\r\n"
                   "   2. pull-ups fitted? this board has none of its own --\r\n"
                   "      4.7k from SDA and SCL to 3V3\r\n"
-                  "   3. CN7 pin 17 = SCL, pin 19 = GND, pin 21 = SDA\r\n"
-                  "      (PA15 / GND / PB7), pack side P1.3 / P1.5 / P1.2\r\n");
+                  "   3. this build expects SCL = " BMS_SCL_NAME
+                  ", SDA = " BMS_SDA_NAME ",\r\n"
+                  "      plus any GND pin. Pack side: P1.3 = SCL, P1.2 = SDA,\r\n"
+                  "      P1.5 = GND\r\n");
     }
     bms_print("press h for keys\r\n\r\n");
 }

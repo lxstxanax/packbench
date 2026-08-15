@@ -222,13 +222,49 @@ typedef struct {
     uint32_t          uptime_ms;    /* HAL_GetTick() at capture */
     uint32_t          seq;          /* successful-poll counter */
     max17320_status_t last_error;   /* result of the poll that filled this */
+
+    /* The FET/fault fields above (status, prot_status, prot_alrt,
+     * hprot_cfg2 and everything derived from them) are refreshed as soon
+     * as those registers have been read, part way into a pass, rather than
+     * waiting for the remaining ~34 reads to finish. These two say when
+     * that last happened, so a safety interlock can judge the freshness of
+     * what it actually uses instead of the freshness of the whole pass.
+     * safety_seq == 0 means they have never been read. */
+    uint32_t          safety_ms;
+    uint32_t          safety_seq;
 } max17320_snapshot_t;
+
+/* The registers one pass reads, in the order it reads them. Faults and FET
+ * state come first so a pass interrupted by a bus error still captured the
+ * values worth having -- and so they can be published early, see
+ * R_SAFETY_LAST below. Do not reorder the first four without moving that
+ * marker with them; there is a _Static_assert on it in the .c. */
+typedef enum {
+    R_STATUS = 0, R_PROTSTATUS, R_PROTALRT, R_HPROTCFG2, R_STATUS2, R_FSTAT,
+    R_COMMSTAT, R_CONFIG, R_CONFIG2, R_NBATTSTATUS, R_DEVNAME,
+    R_CELL1, R_CELL2, R_AVGCELL1, R_AVGCELL2, R_VCELL, R_AVGVCELL, R_BATT, R_PCKP,
+    R_CURRENT, R_AVGCURRENT, R_POWER, R_ICHGTERM,
+    R_REPSOC, R_VFSOC, R_AGE, R_FULLSOCTHR, R_REPCAP, R_FULLCAPREP, R_DESIGNCAP,
+    R_CYCLES, R_TEMP, R_AVGTA, R_DIETEMP, R_TTE, R_TTF,
+    R_CHARGINGCURRENT, R_CHARGINGVOLTAGE,
+    R_COUNT
+} max17320_poll_reg_t;
+
+/* Last of the safety-critical prefix: once this one has been read, the
+ * fault words and the live FET state are all in hand and get published to
+ * the snapshot immediately, without waiting for the rest of the pass. */
+#define R_SAFETY_LAST  R_HPROTCFG2
 
 typedef struct {
     I2C_HandleTypeDef *hi2c;
     int32_t curr_det_01ma;   /* charge/discharge deadband from nProtMiscTh */
     bool    boot_read_ok;
     uint32_t fail_count;     /* consecutive failed polls */
+
+    /* Resumable poll state: raw[] accumulates across calls, poll_idx says
+     * how far the current pass got. */
+    uint16_t raw[R_COUNT];
+    uint8_t  poll_idx;
 
     /* Read once at init from NVM. nDesignCap == 0 is the giveaway that a
      * part has never been provisioned: on a 2S board with a 5 mOhm shunt
@@ -252,6 +288,30 @@ max17320_status_t max17320_monitor_init(max17320_monitor_t *mon, I2C_HandleTypeD
  * can keep showing the last good reading with a "STALE" marker instead of
  * flashing zeros. */
 max17320_status_t max17320_monitor_poll(max17320_monitor_t *mon, max17320_snapshot_t *snap);
+
+/*
+ * Resumable version: reads at most budget registers, then returns.
+ *
+ * This exists for builds where the monitor shares a main loop with
+ * real-time work. A whole pass is ~38 register reads: about 18 ms at
+ * 100 kHz, which would wreck a control loop; four per call is under a
+ * millisecond.
+ *
+ * The measured values (voltages, current, gauge outputs) are decoded only
+ * when a pass completes, so they never show half of one sample and half of
+ * the next. The safety fields are the deliberate exception: the fault
+ * words and the live FET state are published the moment R_SAFETY_LAST has
+ * been read -- they are self-consistent among themselves, they are what an
+ * interlock acts on, and making them wait for ~34 more reads of scenery
+ * bought nothing. snap->safety_ms / safety_seq track that publication;
+ * snap->uptime_ms / seq still track completed passes.
+ *
+ * Returns true when a pass completed (the whole snapshot updated), false
+ * while one is still in progress or after a bus error (which restarts the
+ * pass). A false return therefore does NOT mean nothing was updated.
+ */
+bool max17320_monitor_poll_step(max17320_monitor_t *mon, max17320_snapshot_t *snap,
+                                uint8_t budget);
 
 /* Names for the ProtStatus/ProtAlrt bits, MSB (D15) first, 16 entries.
  * which_d0 picks the correct D0 label ("Ship" vs "LDet"). */

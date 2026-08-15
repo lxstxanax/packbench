@@ -1,0 +1,183 @@
+
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build",
+      "type": "cmake",
+      "command": "build",
+      "problemMatcher": "$gcc",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "options": {
+        "statusbar": {
+          "hide": false,
+          "color": "#22d63a"
+        }
+      }
+    },
+    {
+      "label": "Clean",
+      "type": "cmake",
+      "command": "clean",
+      "problemMatcher": "$gcc",
+      "group": "build",
+      "options": {
+        "statusbar": {
+          "hide": false,
+          "color": "#e91f11"
+        }
+      }
+    },
+    {
+      "label": "Clean & Rebuild",
+      "type": "cmake",
+      "command": "cleanRebuild",
+      "problemMatcher": "$gcc",
+      "group": "build",
+      "options": {
+        "statusbar": {
+          "hide": false,
+          "color": "#e9e507"
+        }
+      }
+    },
+    {
+      "label": "BuildSize",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-c",
+        "elf=$(find ./build -name '*.elf' | head -n 1); echo Using ELF: $elf; /opt/st/stm32cubeclt_1.21.0/GNU-tools-for-STM32/bin/arm-none-eabi-size $elf"
+      ],
+      "dependsOn": ["Build"],
+      "dependsOrder": "sequence",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always"
+      },
+      "options": {
+        "statusbar": {
+          "color": "#0cec2a"
+        }
+      }
+    },
+    {
+      "label": "OpenConfiguration",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-c",
+        "file=$(find . -name '*.ioc' | head -n 1); echo Found file: $file; stm32cubemx $file"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always"
+      },
+      "options": {
+        "statusbar": {
+          "color": "#13e6e6",
+          "icon": {
+            "id": "gear"
+          }
+        }
+      }
+    },
+    {
+      "label": "Build FlashSTM32",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-c",
+        "elf=$(find ./build -name '*.elf' | head -n 1); echo Using ELF: $elf; STM32_Programmer_CLI -c port=SWD freq=24000 -w $elf 0x8000000 -hardRst -rst --start"
+      ],
+      "dependsOn": ["Build", "BuildSize"],
+      "dependsOrder": "sequence",
+      "problemMatcher": [],
+      "options": {
+        "statusbar": {
+          "hide": false,
+          "color": "#13e6e6",
+          "detail": "Build and flash binary file, then reset",
+          "icon": {
+            "id": "play"
+          }
+        }
+      }
+    },
+    {
+      "label": "Reastart",
+      "type": "shell",
+      "command": "STM32_Programmer_CLI",
+      "args": [
+        "-c",
+        "port=SWD",
+        "freq=24000",
+        "-hardRst",
+        "-rst",
+        "--start"
+      ],
+      "problemMatcher": [],
+      "options": {
+        "statusbar": {
+          "hide": false,
+          "color": "#13e6e6",
+          "detail": "Reset",
+          "icon": {
+            "id": "play"
+          }
+        }
+      }
+    },
+    {
+      "label": "Erase Build FlashSTM32",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-c",
+        "elf=$(find ./build -name '*.elf' | head -n 1); echo Using ELF: $elf; STM32_Programmer_CLI -c port=SWD freq=24000 -w $elf 0x8000000 -hardRst -rst --start"
+      ],
+      "dependsOn": ["Full CHIP Erase", "Build", "BuildSize"],
+      "dependsOrder": "sequence",
+      "problemMatcher": [],
+      "options": {
+        "statusbar": {
+          "hide": false,
+          "color": "#d8e613",
+          "detail": "Build and flash binary file after full chip erase",
+          "icon": {
+            "id": "gear"
+          }
+        }
+      }
+    },
+    {
+      "label": "Full CHIP Erase",
+      "type": "shell",
+      "command": "STM32_Programmer_CLI",
+      "args": [
+        "-c",
+        "port=SWD",
+        "freq=24000",
+        "-e",
+        "ALL",
+        "-hardRst",
+        "-rst"
+      ],
+      "problemMatcher": [],
+      "options": {
+        "statusbar": {
+          "hide": false,
+          "color": "#f53404",
+          "detail": "Perform full chip erase",
+          "icon": {
+            "id": "gear"
+          }
+        }
+      }
+    }
+  ]
+}
+

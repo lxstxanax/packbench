@@ -1,6 +1,15 @@
 {
-    // The CMake project lives in the CubeMX-generated subfolder, not at the
-    // workspace root -- the root also holds fw/, tools/ and notes/.
+    // Two firmware projects live under this root: car_fw/ (the vehicle) and
+    // max17320_gui/ (the standalone bench monitor). The CMake Tools extension
+    // can follow only one of them, and it follows the bench monitor here.
+    //
+    // Building and flashing is therefore NOT done through the CMake Tools
+    // button: use the status-bar tasks, which name their target explicitly
+    // ("Build car" / "Flash car" / "Build monitor" / "Flash monitor") and each
+    // carry their own cwd and .elf path. See .vscode/tasks.json.
+    //
+    // For IntelliSense on the car's own sources, open car_fw/ as the folder --
+    // it has its own .vscode/ pointing at its own compile_commands.json.
     "cmake.sourceDirectory": "${workspaceFolder}/max17320_gui",
     "cmake.useCMakePresets": "always",
     "cmake.preferredGenerators": [
