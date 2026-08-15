@@ -99,9 +99,23 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     PB6     ------> USART1_TX
     PB7     ------> USART1_RX
     */
+    // GPIO_PULLUP, not GPIO_NOPULL as CubeMX generates.
+    //
+    // A UART line at rest must be HIGH. PB7 is the RX from the Raspberry Pi,
+    // and it is floating whenever the Pi is booting, held in reset, powered
+    // down, or simply unplugged -- on a wire that runs beside a BTS7960 bridge
+    // switching motor current at 20 kHz. Every noise excursion below the input
+    // threshold looks like a start bit, which produces framing errors and
+    // overruns for as long as the noise lasts.
+    //
+    // The pull-up is on PB6 as well, which is harmless: PB6 is a push-pull
+    // alternate-function output and drives the line itself.
+    //
+    // NOTE FOR REGENERATION: the .ioc has no PB7.GPIOParameters entry, so
+    // running CubeMX over this project puts GPIO_NOPULL back. Re-apply this.
     GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);

@@ -261,11 +261,17 @@ static volatile uint32_t drive_timeout_ms = UART_CONTROL_TIMEOUT_MS;
 static volatile uint32_t link_bytes       = 0U;  // bytes seen by the RX ISR
 static volatile uint32_t link_frames      = 0U;  // complete 5-byte frames assembled
 static volatile uint32_t link_frames_used = 0U;  // frames the main loop actually read
-static volatile uint32_t link_crc_err     = 0U;  // frames rejected by CRC
+/* Five-byte windows rejected by the checksum -- not frames. After a resync the
+ * windows overlap, so on an 0xA5-dense line this can rise much faster than one
+ * per frame. Compare it against link_frames, never against a frame count from
+ * before the sliding resync existed. */
+static volatile uint32_t link_crc_err     = 0U;
 static volatile uint32_t link_range_err   = 0U;  // CONTROL rejected on value range
 static volatile uint32_t link_control_ok  = 0U;  // CONTROL accepted and acted on
 static volatile uint32_t link_estop       = 0U;  // ESTOP frames latched in the ISR
 static volatile uint32_t link_uart_err    = 0U;  // HAL error callbacks (noise/overrun)
+static volatile uint32_t link_partial     = 0U;  // frames that started but never finished
+static volatile uint32_t link_resync      = 0U;  // sliding-window resyncs after a bad checksum
 
 // After the pack protector cuts the discharge path, the bridge must stay
 // off until the pack has read healthy continuously for this long. Without
@@ -328,6 +334,7 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 
 static uint8_t UART_CalcCRC(uint8_t start, uint8_t cmd, uint8_t motor, uint8_t steer);
+static void UART_Resync(void);
 static int16_t MotorPercent_ToPwm(int8_t percent);
 static void UART_SendPacket(uint8_t cmd, int8_t motor, uint8_t steer_position);
 static void UART_ProcessPacket(uint8_t *packet);
@@ -467,10 +474,12 @@ static bool Console_AuxKey(char c)
                        "  CONTROL ok %10lu    last CONTROL %lu ms ago\r\n",
                        (unsigned long)frames, (unsigned long)overwritten,
                        (unsigned long)ctrl_ok, (unsigned long)ctrl_age);
-            bms_printf("  CRC bad    %10lu    range bad    %lu\r\n"
+            bms_printf("  CRC bad(w) %10lu    range bad    %lu\r\n"
                        "  ESTOP rx   %10lu    UART errors  %lu\r\n",
                        (unsigned long)crc_bad, (unsigned long)range_bad,
                        (unsigned long)estops, (unsigned long)uart_errs);
+            bms_printf("  truncated  %10lu    resyncs      %lu\r\n",
+                       (unsigned long)link_partial, (unsigned long)link_resync);
             bms_printf("  drive watchdog %s  (timeout %u ms)\r\n",
                        drive_watchdog_armed ? "ARMED" : "not armed",
                        (unsigned)UART_CONTROL_TIMEOUT_MS);
@@ -1005,12 +1014,23 @@ int main(void)
     }
     __enable_irq();
 
-    // A truncated frame means the link is not trustworthy right now, so give
-    // up drive authority. The next valid CONTROL packet re-arms, and the ramp
-    // makes that re-arm gentle.
-    if (partial_frame_dropped && drive_enabled)
+    // A truncated frame is counted, not braked on.
+    //
+    // This used to call Drive_FailSafe(), which is a hard brake: MotorDC_Stop()
+    // puts BOTH compares at zero, so both low-side switches conduct and the
+    // motor is shorted through the bridge -- applied within one 50 us PWM
+    // period, at whatever speed the car was doing. Recovery then costs about
+    // half a second of ramp just to reach breakaway. One glitch on a jumper
+    // produced a lurch, a stall and a slow crawl back up.
+    //
+    // It was a safety mechanism aimed at the wrong event. A truncated frame
+    // means ONE command was lost. A dead link is what must drop the bridge,
+    // and the CONTROL watchdog above already does that, more reliably. The
+    // count is visible on the 'l' screen, which is where a flaky cable should
+    // show up -- as evidence, not as a brake.
+    if (partial_frame_dropped)
     {
-        Drive_FailSafe();
+        link_partial++;
     }
 
 #if STEERING_DEMO_SELFTEST
@@ -1314,6 +1334,53 @@ static int16_t MotorPercent_ToPwm(int8_t percent)
 }
 
 
+// Sliding-window resynchronisation, run only after a complete five-byte window
+// has FAILED its checksum.
+//
+// The old parser threw away all five bytes and started over. If one byte is
+// lost on the wire, the window that fails is [A5][C][M][X][A5] -- and the
+// trailing 0xA5 it discards is the real start of the NEXT frame, so that frame
+// is destroyed too. Instead, drop one byte and look for the next 0xA5 among
+// the four still in hand, then slide it to the front.
+//
+// Be honest about when this actually earns its keep. Two frames are lost per
+// single-byte error only when the next start byte arrives before the
+// partial-frame timeout has been serviced -- that is, frames spaced closer
+// than UART_PARTIAL_FRAME_TIMEOUT_MS, or any gap in which the main loop was
+// stalled. At the RPi's resting 5 Hz keepalive the 10 ms timeout already
+// clears a truncated frame during the gap, so a DELETED byte costs one frame
+// with or without this code. What the resync does cover is a CORRUPTED byte,
+// whose window completes inside the burst, and any future sender that packs
+// frames closer together. The simulation quoted below modelled a gapless
+// stream: 2.00 frames lost without the resync, 1.00 with it.
+//
+// It is bounded, not statistical: only bytes preceding the earliest surviving
+// 0xA5 are discarded, so the true frame start can never be skipped past, and
+// each call consumes at least one byte, so it always makes progress.
+//
+// Note what this does NOT do: it never resynchronises inside a frame that is
+// still being assembled. The deliberate "do not resync on 0xA5 mid-frame" rule
+// is untouched -- packet[2] is a signed motor percent and is legitimately 0xA5
+// at -91. Alignment is only ever reconsidered after a window has already
+// failed its check, which is information the old code discarded.
+//
+// Called from the RX ISR with the buffer it owns.
+static void UART_Resync(void)
+{
+    for (uint8_t i = 1U; i < UART_PACKET_SIZE; i++)
+    {
+        if (uart_packet[i] == UART_PACKET_START)
+        {
+            memmove(uart_packet, &uart_packet[i], (size_t)(UART_PACKET_SIZE - i));
+            uart_packet_index = (uint8_t)(UART_PACKET_SIZE - i);
+            link_resync++;
+            return;
+        }
+    }
+
+    uart_packet_index = 0U;
+}
+
 static void UART_SendPacket(uint8_t cmd, int8_t motor, uint8_t steer_position)
 {
     uint8_t packet[UART_PACKET_SIZE];
@@ -1401,7 +1468,28 @@ static void UART_ProcessPacket(uint8_t *packet)
 
         case UART_CMD_STOP:
         {
-            drive_watchdog_armed = 0U;
+            // Keep the watchdog ARMED, and refresh it.
+            //
+            // This used to disarm it, which was the one place in the file that
+            // stopped supervising the link without also opening the bridge:
+            // Drive_FailSafe() clears both flags together, STOP cleared only
+            // the watchdog. Because the watchdog's guard is the armed flag and
+            // not the age of the last packet, the result was an enabled
+            // full-authority bridge with nothing watching the link at all --
+            // and with both compares at zero the winding sits shorted across
+            // it, so a car that is pushed or rolls circulates its back-EMF
+            // through the low-side FETs unsupervised.
+            //
+            // Keeping it armed means the ramp-down still runs, and if no
+            // further packet arrives the CONTROL watchdog opens the bridge
+            // half a second later, exactly as it does for any other silence.
+            //
+            // Nothing else covered this: the truncated-frame handler used to,
+            // by accident, and it no longer brakes on a lost byte.
+            last_control_packet_tick = HAL_GetTick();
+            drive_watchdog_armed = 1U;
+            drive_timeout_ms = UART_CONTROL_TIMEOUT_MS;
+
             MotorDC_SetSpeed(0);
             Steering_Enable();
             Steering_SetPosition(50U); // smooth center through Steering_Update()
@@ -1473,31 +1561,47 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
                 // The CRC is checked here for the same reason the main loop
                 // checks it: a corrupted frame must not be able to invent a
                 // stop. uart_packet[0] is UART_PACKET_START by construction.
-                if ((uart_packet[1] == UART_CMD_ESTOP) &&
-                    (uart_packet[4] == UART_CalcCRC(uart_packet[0],
-                                                    uart_packet[1],
-                                                    uart_packet[2],
-                                                    uart_packet[3])))
+                // The checksum is now tested HERE rather than only in the main
+                // loop, because a failed window is what drives the sliding
+                // resynchronisation below -- and that has to happen in the
+                // buffer this ISR owns, before the bytes are gone.
+                bool frame_ok = (uart_packet[4] == UART_CalcCRC(uart_packet[0],
+                                                                uart_packet[1],
+                                                                uart_packet[2],
+                                                                uart_packet[3]));
+
+                if (!frame_ok)
                 {
-                    estop_latched = 1U;
-                    link_estop++;
-
-                    // Kill the bridge now, at register level, instead of
-                    // waiting for the main loop: a monitor console command
-                    // can hold that loop for a few hundred milliseconds, and
-                    // an emergency stop must not queue behind it. The main
-                    // loop still runs the full, ordered fail-safe afterwards.
-                    Drive_EmergencyOff();
+                    // Bad window: keep whatever might be the start of the next
+                    // frame instead of discarding all five bytes.
+                    link_crc_err++;
+                    UART_Resync();
                 }
+                else
+                {
+                    if (uart_packet[1] == UART_CMD_ESTOP)
+                    {
+                        estop_latched = 1U;
+                        link_estop++;
 
-                link_frames++;
+                        // Kill the bridge now, at register level, instead of
+                        // waiting for the main loop: a monitor console command
+                        // can hold that loop for a few hundred milliseconds,
+                        // and an emergency stop must not queue behind it. The
+                        // main loop still runs the full, ordered fail-safe
+                        // afterwards.
+                        Drive_EmergencyOff();
+                    }
 
-                // Latest complete packet wins.
-                // This is better for high-rate repeated control commands.
-                memcpy(uart_packet_rx, uart_packet, UART_PACKET_SIZE);
-                uart_packet_ready = 1U;
+                    link_frames++;
 
-                uart_packet_index = 0U;
+                    // Latest complete packet wins.
+                    // This is better for high-rate repeated control commands.
+                    memcpy(uart_packet_rx, uart_packet, UART_PACKET_SIZE);
+                    uart_packet_ready = 1U;
+
+                    uart_packet_index = 0U;
+                }
             }
         }
 
