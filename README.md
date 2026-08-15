@@ -251,18 +251,46 @@ that stops the motor. The console says what it refused and why. Stop the car
 
 ### Car-only console keys — `car_fw` on the ST-Link VCP
 
-These ride on the same console and are **not** in the `h` help screen, which
-belongs to the shared monitor:
+These ride on the same console and are now listed under the `h` help screen
+too — `bms_app` offers `h` to the host handler so a vehicle key cannot go
+missing at the moment someone needs it:
 
 | Key | Action |
 |---|---|
-| `e` | clear a latched emergency stop — the *only* way back, short of reset |
+| `t` `v` | **bench drive** forward / reverse, with no RPi attached — see below |
+| `l` | **RPi link statistics** and a verdict on what is wrong with the link |
+| `e` | clear a latched emergency stop (button B1 also clears it) |
 | `i` | waive the pack-telemetry interlock for this session (asks `y` within 5 s) |
 | `m` | motor limit, and the bridge / e-stop / interlock state |
 | `+` `-` | motor limit ±5 % |
 | `s` | steering: commanded pulse vs. current pulse |
 | `=` | steering centre |
 | `>` `<` `.` `,` | steering pulse ±10 µs / ±50 µs (calibration) |
+
+**Bench drive (`t` / `v`)** makes the motor testable with no Raspberry Pi
+connected. It runs the *same* path a CONTROL packet takes — `Drive_Arm()`, the
+ramp, the speed limiter, the same watchdog — so what is tested is what will
+run. Two deliberate guards:
+
+- **The first press only arms.** Driving needs a second press within
+  `BENCH_ARM_WINDOW_MS`. A console key has no start byte, length or checksum
+  behind it, and one stray byte must not be able to command throttle.
+- **It stops on its own.** Keys must keep arriving; `BENCH_DRIVE_TIMEOUT_MS`
+  (900 ms) opens the bridge after the last one. That is deliberately longer
+  than the RPi's 500 ms, because terminal auto-repeat does not start at the
+  repeat *rate* — it starts after a 500–660 ms *delay*, and one shared deadline
+  made every hold run arm → fail-safe → re-arm.
+
+**The two board buttons are not two user buttons.** `B1` (blue, PC13) is the
+only input: press to latch an emergency stop, press again after
+`ESTOP_BUTTON_REARM_MS` to clear it. Clearing removes the block only — it never
+re-enables the bridge by itself. `B2` (black) is wired to NRST and is a reset;
+it cannot be bound to anything.
+
+**Steering limits are calibrated**, measured on the car 2026-08-16:
+`750 / 1550 / 2400 µs` (right / centre / left). Travel is 850 µs left and
+800 µs right; the interpolation is two-sided, so the asymmetry is handled. If
+the linkage changes, re-measure with `=`, `.`, `,` and `s`.
 
 > **If the gauge link dies mid-demonstration, this is the escape hatch.**
 > Without fresh pack data the monitor reports `UNKNOWN`; the car keeps driving
