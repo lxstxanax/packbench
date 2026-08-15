@@ -214,6 +214,11 @@
 // correctness requirement.
 #define ESTOP_BUTTON_DEBOUNCE_MS    200U
 
+// How long after latching a stop the same button will refuse to clear it.
+// Long enough that clearing is unmistakably a second, deliberate press rather
+// than a bounce, a knock, or the tail of a panicked double-tap.
+#define ESTOP_BUTTON_REARM_MS      1500U
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -1651,6 +1656,32 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         {
             return;
         }
+        // Second action: a press while a stop is already latched CLEARS it, so
+        // the one button on this board is the whole stop control and the
+        // console is not needed to get moving again.
+        //
+        // Guarded by a much longer window than the debounce above. Clearing a
+        // stop must not be something a bounce, a knock or a nervous double-tap
+        // can do -- it has to be a separate, deliberate press. Latching, by
+        // contrast, stays instant: making a stop harder to reach would be the
+        // wrong trade in every case.
+        if (estop_latched)
+        {
+            if ((now - last_press_tick) < ESTOP_BUTTON_REARM_MS)
+            {
+                return;     /* too soon after the stop -- ignore, stay stopped */
+            }
+
+            last_press_tick = now;
+            estop_latched = 0U;
+
+            // Deliberately does NOT re-enable the bridge. Clearing the latch
+            // only removes the block; the drive still has to be commanded
+            // again by the RPi or the bench keys, and Drive_Arm() still has to
+            // be satisfied. Releasing a stop must never itself start a motor.
+            return;
+        }
+
         last_press_tick = now;
 
         estop_latched = 1U;
