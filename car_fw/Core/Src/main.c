@@ -94,17 +94,22 @@
 // Adjustable live from the console with + and - (5 % steps), reported by m.
 // Once a good value is found on the floor, put it here so it survives a reset.
 //
-// SET TO 20 % on 2026-08-16: the requirement for the demonstration is that the
-// car moves SLOWLY, not that it reaches a good top speed. 20 % is still well
-// above the breakaway floor -- DC_PWM_MIN_START is added before this scaling,
-// never scaled by it -- so the car still starts from standstill; it just tops
-// out low.
+// SET TO 30 % on 2026-08-16, chosen ON THE FLOOR under the car's own weight,
+// not on blocks. The requirement is that it moves slowly and deliberately, not
+// that it reaches a good top speed. Walked up 20 -> 25 -> 30 with the driver
+// watching it; 30 is the pace that was wanted.
 //
-// This number was chosen on blocks, where the wheels are unloaded. On the
-// floor the same PWM gives a lower speed, so if it turns out not to move under
-// its own weight, raise it with '+' rather than assuming something is broken,
-// then put the value that worked back here.
-#define DC_SPEED_LIMIT_PCT_DEFAULT   20
+// DC_PWM_MIN_START is added before this scaling and never scaled by it, which
+// is what keeps the breakaway kick intact at a low ceiling -- the car still
+// starts from standstill, it just tops out low.
+//
+// Pack current measured at this setting, which is what matters because the
+// protector sits in the motor's path:
+//     0.11 A at rest      0.44 A wheels in the air
+//     1.5 A driving straight      2.3 A driving at full steering lock
+// No protector trips at any point, against a practical ceiling near 10 A set
+// by the 5 mOhm shunt's own dissipation.
+#define DC_SPEED_LIMIT_PCT_DEFAULT   30
 
 // Set to 1 only for bench testing without a UART master connected.
 // Keep it 0 for normal operation: the demo block below drives the servo
