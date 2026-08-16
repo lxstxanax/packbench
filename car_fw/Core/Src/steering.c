@@ -29,12 +29,16 @@
 // MEASURED on the car, 2026-08-16, servo fitted and linkage relieved with a
 // Dremel so nothing binds. Swept from centre in 50 us steps while watching the
 // wheels: they stop gaining angle at 2400 us to the left, and 600 us to the
-// right was past what the geometry wants, so the right limit is pulled back
-// three steps to 750 us. Travel is 850 us left and 800 us right -- slightly
-// asymmetric, which the two-sided interpolation below handles exactly.
+// right was past what the geometry wants.
+//
+// The right limit was then pulled back in stages while actually driving the
+// car -- first to 750 us, then trimmed a further 50 us to 800 us because the
+// right turn was still tighter than wanted. Travel is now 850 us left and
+// 750 us right; the interpolation below is two-sided, so that asymmetry is
+// handled exactly and the centre stays where it is.
 #define STEERING_LEFT_US          2400U
 #define STEERING_CENTER_US        1550U
-#define STEERING_RIGHT_US          750U
+#define STEERING_RIGHT_US          800U
 
 #define STEERING_ABS_MIN_US        500U
 #define STEERING_ABS_MAX_US       2500U
