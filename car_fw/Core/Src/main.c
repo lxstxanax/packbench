@@ -298,6 +298,16 @@ static volatile uint32_t link_uart_err    = 0U;  // HAL error callbacks (noise/o
 static volatile uint32_t link_partial     = 0U;  // frames that started but never finished
 static volatile uint32_t link_resync      = 0U;  // sliding-window resyncs after a bad checksum
 
+// Payload of the last accepted CONTROL packet, plus the largest throttle
+// magnitude ever seen. Without these, "the car does not move" cannot be told
+// apart from "the sender is asking for zero throttle" -- the firmware side
+// looks identical in both cases: link healthy, bridge armed, no faults.
+static volatile int8_t   link_last_motor  = 0;
+static volatile uint8_t  link_last_steer  = 50U;
+static volatile uint8_t  link_max_motor   = 0U;  // peak |motor_percent| seen
+static volatile uint8_t  link_steer_min   = 255U;
+static volatile uint8_t  link_steer_max   = 0U;
+
 // After the pack protector cuts the discharge path, the bridge must stay
 // off until the pack has read healthy continuously for this long. Without
 // it the RPi's command stream -- controller.py resends at least every 200 ms
@@ -505,6 +515,12 @@ static bool Console_AuxKey(char c)
                        (unsigned long)estops, (unsigned long)uart_errs);
             bms_printf("  truncated  %10lu    resyncs      %lu\r\n",
                        (unsigned long)link_partial, (unsigned long)link_resync);
+            bms_printf("  last CONTROL payload: motor %d %%   steer %u\r\n"
+                       "  seen so far: |motor| max %u %%   steer %u..%u\r\n",
+                       (int)link_last_motor, (unsigned)link_last_steer,
+                       (unsigned)link_max_motor,
+                       (unsigned)((link_steer_min == 255U) ? 0U : link_steer_min),
+                       (unsigned)link_steer_max);
             bms_printf("  drive watchdog %s  (timeout %u ms)\r\n",
                        drive_watchdog_armed ? "ARMED" : "not armed",
                        (unsigned)UART_CONTROL_TIMEOUT_MS);
@@ -1482,6 +1498,16 @@ static void UART_ProcessPacket(uint8_t *packet)
             drive_watchdog_armed = 1U;
             drive_timeout_ms = UART_CONTROL_TIMEOUT_MS;
             link_control_ok++;
+
+            link_last_motor = motor_percent;
+            link_last_steer = steer_position;
+            {
+                uint8_t mag = (uint8_t)((motor_percent < 0) ? -motor_percent
+                                                            : motor_percent);
+                if (mag > link_max_motor)             { link_max_motor = mag; }
+                if (steer_position < link_steer_min)  { link_steer_min = steer_position; }
+                if (steer_position > link_steer_max)  { link_steer_max = steer_position; }
+            }
 
             Drive_Arm();
             Steering_Enable();
