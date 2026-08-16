@@ -111,7 +111,7 @@
 //     1.5 A driving straight      2.3 A driving at full steering lock
 // No protector trips at any point, against a practical ceiling near 10 A set
 // by the 5 mOhm shunt's own dissipation.
-#define DC_SPEED_LIMIT_PCT_DEFAULT   35
+#define DC_SPEED_LIMIT_PCT_DEFAULT   40
 
 // Set to 1 only for bench testing without a UART master connected.
 // Keep it 0 for normal operation: the demo block below drives the servo
@@ -309,6 +309,19 @@ static volatile uint8_t  link_last_steer  = 50U;
 static volatile uint8_t  link_max_motor   = 0U;  // peak |motor_percent| seen
 static volatile uint8_t  link_steer_min   = 255U;
 static volatile uint8_t  link_steer_max   = 0U;
+
+// Times the drive was dropped by something other than the operator, and how
+// long ago the last one was.
+//
+// These exist because a watchdog drop and ordinary load look identical from
+// the driver's seat: the car simply goes slow for a moment. It is not the same
+// event at all -- a watchdog drop opens the bridge and restarts the ramp from
+// zero, which costs about a second to get back to speed, and it means a
+// command was lost. Guessing between "the link hiccupped" and "the turn was
+// just heavy" is exactly the kind of thing that cannot be done on a stage.
+static volatile uint32_t drop_watchdog    = 0U;  // CONTROL watchdog expired
+static volatile uint32_t drop_pack        = 0U;  // pack interlock took the drive
+static volatile uint32_t drop_last_tick   = 0U;
 
 // After the pack protector cuts the discharge path, the bridge must stay
 // off until the pack has read healthy continuously for this long. Without
@@ -523,6 +536,24 @@ static bool Console_AuxKey(char c)
                        (unsigned)link_max_motor,
                        (unsigned)((link_steer_min == 255U) ? 0U : link_steer_min),
                        (unsigned)link_steer_max);
+
+            {
+                uint32_t wd = drop_watchdog, pk = drop_pack;
+
+                if ((wd == 0U) && (pk == 0U))
+                {
+                    bms_print("  drive never dropped by itself since boot\r\n");
+                }
+                else
+                {
+                    bms_printf("  DRIVE DROPPED: link watchdog %lu, pack %lu"
+                               "  (last %lu ms ago)\r\n",
+                               (unsigned long)wd, (unsigned long)pk,
+                               (unsigned long)(now - drop_last_tick));
+                    bms_print("  -> each drop opens the bridge and restarts the\r\n"
+                              "     ramp from zero: about a second back to speed.\r\n");
+                }
+            }
             bms_printf("  drive watchdog %s  (timeout %u ms)\r\n",
                        drive_watchdog_armed ? "ARMED" : "not armed",
                        (unsigned)UART_CONTROL_TIMEOUT_MS);
@@ -954,6 +985,9 @@ int main(void)
 
             if (drive_enabled)
             {
+                drop_pack++;
+                drop_last_tick = pack_now;
+
                 Drive_FailSafe();
             }
         }
@@ -1029,6 +1063,9 @@ int main(void)
     if (drive_watchdog_armed &&
         ((now - last_control_packet_tick) > drive_timeout_ms))
     {
+        drop_watchdog++;
+        drop_last_tick = now;
+
         Drive_FailSafe();   // zero PWM, then R_EN/L_EN low
         Steering_Disable(); // immediate center + PWM hold
     }
