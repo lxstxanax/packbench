@@ -64,6 +64,10 @@
 // So the protocol value is negated exactly once, here, on its way into
 // MotorPercent_ToPwm(), and nothing downstream needs to know.
 //
+// VERIFIED ON THE VEHICLE 2026-08-16: with the car on blocks, the bench-drive
+// forward key turned the wheels physically forward. This sign is correct as it
+// stands -- do not "fix" it without re-testing on blocks.
+//
 // If the motor leads are ever swapped, flip this to +1 and change nothing
 // else. It was previously an unexplained unary minus buried in the CONTROL
 // handler, which is a bad place for the one line that decides whether "full
@@ -89,7 +93,18 @@
 //
 // Adjustable live from the console with + and - (5 % steps), reported by m.
 // Once a good value is found on the floor, put it here so it survives a reset.
-#define DC_SPEED_LIMIT_PCT_DEFAULT   40
+//
+// SET TO 20 % on 2026-08-16: the requirement for the demonstration is that the
+// car moves SLOWLY, not that it reaches a good top speed. 20 % is still well
+// above the breakaway floor -- DC_PWM_MIN_START is added before this scaling,
+// never scaled by it -- so the car still starts from standstill; it just tops
+// out low.
+//
+// This number was chosen on blocks, where the wheels are unloaded. On the
+// floor the same PWM gives a lower speed, so if it turns out not to move under
+// its own weight, raise it with '+' rather than assuming something is broken,
+// then put the value that worked back here.
+#define DC_SPEED_LIMIT_PCT_DEFAULT   20
 
 // Set to 1 only for bench testing without a UART master connected.
 // Keep it 0 for normal operation: the demo block below drives the servo
