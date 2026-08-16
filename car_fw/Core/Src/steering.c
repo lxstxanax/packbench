@@ -33,11 +33,21 @@
 //
 // The right limit was then pulled back in stages while actually driving the
 // car -- first to 750 us, then trimmed a further 50 us to 800 us because the
-// right turn was still tighter than wanted. Travel is now 850 us left and
-// 750 us right; the interpolation below is two-sided, so that asymmetry is
-// handled exactly and the centre stays where it is.
+// right turn was still tighter than wanted.
+//
+// CENTRE corrected 1550 -> 1500 the same day. At 1550 the wheels visibly
+// pointed slightly left, which is the kind of thing that only shows up as the
+// car pulling to one side over a few metres. Confirmed by driving: straight
+// forward and straight in reverse at 1500, with the pulse read back mid-run to
+// prove the servo was holding the commanded value and not drifting.
+//
+// The two limits are absolute pulse widths set by where the wheels physically
+// stop, so moving the centre does not move them. Travel is therefore 900 us
+// left and 700 us right. The interpolation below is two-sided -- 0 maps to
+// RIGHT, 50 to CENTER, 100 to LEFT, each side scaled independently -- so the
+// asymmetry is handled exactly.
 #define STEERING_LEFT_US          2400U
-#define STEERING_CENTER_US        1550U
+#define STEERING_CENTER_US        1500U
 #define STEERING_RIGHT_US          800U
 
 #define STEERING_ABS_MIN_US        500U
